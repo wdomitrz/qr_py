@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import re
 import sys
 from dataclasses import dataclass
@@ -19,6 +20,8 @@ ErrorCorrection = Literal["L", "M", "Q", "H"]
 SegmentMode = Literal["numeric", "alphanumeric", "byte", "kanji"]
 RequestedMode = Literal["auto", "numeric", "alphanumeric", "byte", "kanji"]
 OutputFormat = Literal["terminal", "bits"]
+Command = Literal["text", "wifi"]
+WifiAuth = Literal["WPA", "WEP", "nopass"]
 ANSI_BLACK = "\033[40m  \033[0m"
 ANSI_WHITE = "\033[47m  \033[0m"
 
@@ -1414,6 +1417,14 @@ class Args:
     'numeric'
     >>> Args.from_argv(["--text", "A", "--format", "bits"]).output_format
     'bits'
+    >>> Args.from_argv(["wifi", "--ssid", "Cafe"]).command
+    'wifi'
+    >>> print(Args.wifi_escape(r"semi;colon\\back:slash,comma"))
+    semi\\;colon\\\\back\\:slash\\,comma
+    >>> print(Args(command="wifi", wifi_ssid="Cafe;Net").wifi_payload("secret"))
+    WIFI:T:WPA;S:Cafe\\;Net;P:secret;;
+    >>> Args(command="wifi", wifi_ssid="Cafe", wifi_auth="nopass").wifi_payload("")
+    'WIFI:T:nopass;S:Cafe;;'
     >>> Args.from_argv([]).split_long_inputs
     True
     >>> Args.from_argv(["--no-split"]).split_long_inputs
@@ -1445,6 +1456,20 @@ class Args:
     >>> len(out.getvalue().splitlines())
     27
     >>> out = StringIO()
+    >>> err = StringIO()
+    >>> with patch("sys.stdin", StringIO("secret\\n")), redirect_stdout(out), redirect_stderr(err):
+    ...     exit_code = Args.from_argv(["wifi", "--ssid", "Cafe", "--format", "bits"]).main()
+    >>> exit_code
+    0
+    >>> err.getvalue()
+    'Password: '
+    >>> len(out.getvalue().splitlines()) > 21
+    True
+    >>> with patch("sys.stdin.isatty", return_value=True), patch("getpass.getpass", return_value="hidden") as getpass_mock:
+    ...     Args.read_wifi_password()
+    'hidden'
+    >>> getpass_mock.assert_called_once_with("Password: ")
+    >>> out = StringIO()
     >>> long_text = "x" * (QRVersions.for_version(40, "L").capacity("byte") + 1)
     >>> with redirect_stdout(out):
     ...     exit_code = Args.from_argv(["--text", long_text, "--format", "bits"]).main()
@@ -1466,7 +1491,11 @@ class Args:
     SystemExit: 2
     """
 
+    command: Command = "text"
     text: str | None = None
+    wifi_ssid: str | None = None
+    wifi_auth: WifiAuth = "WPA"
+    wifi_hidden: bool = False
     quiet_zone: int = 2
     error_correction: ErrorCorrection = "L"
     mode: RequestedMode = "byte"
@@ -1476,6 +1505,31 @@ class Args:
     @classmethod
     def from_argv(cls, argv: list[str] | None = None) -> Args:
         parser = argparse.ArgumentParser(description="Generate a terminal QR code.")
+        cls.add_common_arguments(parser)
+        namespace = parser.parse_args(argv)
+        if namespace.command == "wifi":
+            return cls(
+                command="wifi",
+                wifi_ssid=namespace.ssid,
+                wifi_auth=cast("WifiAuth", namespace.auth),
+                wifi_hidden=namespace.hidden,
+                quiet_zone=namespace.quiet_zone,
+                error_correction=cast("ErrorCorrection", namespace.error_correction),
+                output_format=cast("OutputFormat", namespace.format),
+            )
+        return cls(
+            command="text",
+            text=namespace.text,
+            quiet_zone=namespace.quiet_zone,
+            error_correction=cast("ErrorCorrection", namespace.error_correction),
+            mode=cast("RequestedMode", namespace.mode),
+            output_format=cast("OutputFormat", namespace.format),
+            split_long_inputs=namespace.split,
+        )
+
+    @classmethod
+    def add_common_arguments(cls, parser: argparse.ArgumentParser) -> None:
+        parser.set_defaults(command="text")
         parser.add_argument("--text")
         parser.add_argument(
             "-l", "--error-correction", choices=("L", "M", "Q", "H"), default="L"
@@ -1498,21 +1552,77 @@ class Args:
             default=True,
             help="split oversized input into multiple QR codes",
         )
-        namespace = parser.parse_args(argv)
-        return cls(
-            text=namespace.text,
-            quiet_zone=namespace.quiet_zone,
-            error_correction=cast("ErrorCorrection", namespace.error_correction),
-            mode=cast("RequestedMode", namespace.mode),
-            output_format=cast("OutputFormat", namespace.format),
-            split_long_inputs=namespace.split,
+        subparsers = parser.add_subparsers()
+        wifi = subparsers.add_parser(
+            "wifi", help="generate a QR code for WiFi credentials"
+        )
+        wifi.set_defaults(command="wifi")
+        wifi.add_argument("--ssid", required=True)
+        wifi.add_argument(
+            "--auth",
+            choices=("WPA", "WEP", "nopass"),
+            default="WPA",
+            help="WiFi authentication type",
+        )
+        wifi.add_argument("--hidden", action="store_true")
+        wifi.add_argument(
+            "-l", "--error-correction", choices=("L", "M", "Q", "H"), default="L"
+        )
+        wifi.add_argument("-q", "--quiet-zone", type=int, default=2)
+        wifi.add_argument(
+            "--format",
+            choices=("terminal", "bits"),
+            default="terminal",
+            help="output representation",
         )
 
     def main(self) -> int:
-        text = self.text if self.text is not None else sys.stdin.read()
-        rendered = [self.render_code(code) for code in self.make_codes(text)]
+        if self.command == "wifi":
+            password = "" if self.wifi_auth == "nopass" else self.read_wifi_password()
+            rendered = [
+                self.render_code(
+                    QRCode.from_text(
+                        self.wifi_payload(password),
+                        error_correction=self.error_correction,
+                        mode="byte",
+                    )
+                )
+            ]
+        else:
+            text = self.text if self.text is not None else sys.stdin.read()
+            rendered = [self.render_code(code) for code in self.make_codes(text)]
         print("\n\n".join(rendered))
         return 0
+
+    @staticmethod
+    def read_wifi_password() -> str:
+        if sys.stdin.isatty():
+            return getpass.getpass("Password: ")
+        print("Password: ", end="", file=sys.stderr, flush=True)
+        return sys.stdin.read().rstrip("\n")
+
+    def wifi_payload(self, password: str) -> str:
+        if self.wifi_ssid is None:
+            msg = "wifi ssid is required"
+            raise ValueError(msg)
+        parts = [
+            "WIFI:",
+            f"T:{self.wifi_auth};",
+            f"S:{self.wifi_escape(self.wifi_ssid)};",
+        ]
+        if self.wifi_auth != "nopass":
+            parts.append(f"P:{self.wifi_escape(password)};")
+        if self.wifi_hidden:
+            parts.append("H:true;")
+        parts.append(";")
+        return "".join(parts)
+
+    @staticmethod
+    def wifi_escape(text: str) -> str:
+        return "".join(
+            f"\\{character}" if character in r"\;:," else character
+            for character in text
+        )
 
     def make_codes(self, text: str) -> list[QRCode]:
         segment = QRSegment.from_text(text, mode=self.mode)
