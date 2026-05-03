@@ -1,0 +1,17 @@
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "COM8",
+    "D",
+    "E501",
+    "S101", "S603",
+    "TC003", "TC006",
+    "INP001",
+    "C901",
+    "PLR09",
+    "T2",
+]
+extend-select = ["I"]
+
+[tool.pyright]
+typeCheckingMode = "strict"
