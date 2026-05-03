@@ -18,6 +18,9 @@ Pixel = bool | None
 ErrorCorrection = Literal["L", "M", "Q", "H"]
 SegmentMode = Literal["numeric", "alphanumeric", "byte", "kanji"]
 RequestedMode = Literal["auto", "numeric", "alphanumeric", "byte", "kanji"]
+OutputFormat = Literal["terminal", "bits"]
+ANSI_BLACK = "\033[40m  \033[0m"
+ANSI_WHITE = "\033[47m  \033[0m"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -70,7 +73,9 @@ class ReedSolomon:
     >>> ReedSolomon.generator(3)
     [7, 14, 8]
     >>> ReedSolomon.remainder([32, 91, 11, 120, 209, 114, 220], 7)
-    [209, 239, 196, 207, 78, 195, 109]
+    [255, 198, 226, 122, 164, 250, 136]
+    >>> ReedSolomon.remainder([64, 198, 23, 54, 70, 102, 23, 54, 70, 102, 23, 54, 70, 96, 236, 17, 236, 17, 236], 7)
+    [221, 150, 217, 99, 43, 41, 158]
     """
 
     PRIMITIVE: ClassVar[int] = 0x11D
@@ -872,6 +877,8 @@ class QRCode:
     ...     for mode, sample in samples.items()
     ... )
     True
+    >>> QRCode.from_text("asdfasdfasdf", mode="byte").error_codewords
+    [221, 150, 217, 99, 43, 41, 158]
     """
 
     text: str
@@ -1012,9 +1019,9 @@ class QRCode:
     def render(
         self,
         *,
-        quiet_zone: int = 4,
-        black: str = "  ",
-        white: str = "██",
+        quiet_zone: int = 2,
+        black: str = ANSI_BLACK,
+        white: str = ANSI_WHITE,
     ) -> str:
         """Render the QR matrix as terminal text.
 
@@ -1023,7 +1030,7 @@ class QRCode:
         '111111100101101111111'
         >>> len(small.splitlines())
         21
-        >>> QRCode.from_text("A").render(quiet_zone=1).splitlines()[0] == "██" * 23
+        >>> QRCode.from_text("A").render(quiet_zone=1).splitlines()[0] == ANSI_WHITE * 23
         True
         """
 
@@ -1039,6 +1046,20 @@ class QRCode:
         )
         rows.extend(blank for _ in range(quiet_zone))
         return "\n".join(rows)
+
+    def render_bits(self) -> str:
+        """Render the raw QR matrix as rows of 0 and 1.
+
+        >>> bits = QRCode.from_text("A").render_bits()
+        >>> bits.splitlines()[0]
+        '111111100101101111111'
+        >>> len(bits.splitlines())
+        21
+        """
+
+        return "\n".join(
+            "".join("1" if cell else "0" for cell in row) for row in self.matrix
+        )
 
 
 class QRMatrix:
@@ -1082,6 +1103,23 @@ class QRMatrix:
     >>> QRMatrix.add_patterns(modules, kinds, version)
     >>> QRMatrix.add_data(modules, kinds, [False] * (QRVersions.raw_data_modules(1) // 8 * 8))
     >>> any(row[0] == "data" for row in kinds)
+    True
+    >>> import re
+    >>> import shutil
+    >>> import subprocess
+    >>> def qrterminal_matrix(text: str) -> list[str]:
+    ...     if shutil.which("qrterminal") is None:
+    ...         return []
+    ...     output = subprocess.check_output(["qrterminal", "-q", "0", text], text=True)
+    ...     rows = []
+    ...     for line in output.splitlines():
+    ...         cells = re.findall(r"\\x1b\\[(4[07])m  \\x1b\\[0m", line)
+    ...         if cells:
+    ...             rows.append("".join("1" if cell == "40" else "0" for cell in cells))
+    ...     return [row[1:22] for row in rows[1:22]]
+    >>> ours = ["".join("1" if cell else "0" for cell in row) for row in QRCode.from_text("asdfasdfasdf", mode="byte").matrix]
+    >>> reference = qrterminal_matrix("asdfasdfasdf")
+    >>> not reference or ours == reference
     True
     """
 
@@ -1141,7 +1179,18 @@ class QRMatrix:
             )
         for row in version.alignment_positions:
             for col in version.alignment_positions:
-                if kinds[row][col] is None:
+                is_finder_overlap = (
+                    (row == QRMatrix.TIMING_ROW_COL and col == QRMatrix.TIMING_ROW_COL)
+                    or (
+                        row == QRMatrix.TIMING_ROW_COL
+                        and col == version.alignment_positions[-1]
+                    )
+                    or (
+                        row == version.alignment_positions[-1]
+                        and col == QRMatrix.TIMING_ROW_COL
+                    )
+                )
+                if not is_finder_overlap:
                     QRMatrix.add_alignment(modules, kinds, row, col)
         QRMatrix.reserve_format(modules, kinds, version)
         if version.version >= QRMatrix.VERSION_INFO_MIN_VERSION:
@@ -1194,7 +1243,11 @@ class QRMatrix:
 
     @staticmethod
     def add_data(
-        modules: list[list[Pixel]], kinds: list[list[Module | None]], bits: list[bool]
+        modules: list[list[Pixel]],
+        kinds: list[list[Module | None]],
+        bits: list[bool],
+        *,
+        mask: int = 0,
     ) -> None:
         bit_index = 0
         upward = True
@@ -1211,7 +1264,7 @@ class QRMatrix:
                     if kinds[row][col] is not None:
                         continue
                     bit = bits[bit_index] if bit_index < len(bits) else False
-                    modules[row][col] = bit ^ QRMatrix.mask(row, col)
+                    modules[row][col] = bit ^ QRMatrix.mask(mask, row, col)
                     kinds[row][col] = "data"
                     bit_index += 1
             upward = not upward
@@ -1221,6 +1274,8 @@ class QRMatrix:
         modules: list[list[Pixel]],
         kinds: list[list[Module | None]],
         version: QRVersion,
+        *,
+        mask: int = 0,
     ) -> None:
         size = version.size
         positions = [
@@ -1242,7 +1297,7 @@ class QRMatrix:
         ]
         mirror_positions = [(8, size - 1 - index) for index in range(8)]
         mirror_positions.extend((size - 15 + index, 8) for index in range(8, 15))
-        format_bits = QRMatrix.format_bits(version.error_correction, mask=0)
+        format_bits = QRMatrix.format_bits(version.error_correction, mask=mask)
         bits = [bool(format_bits & (1 << shift)) for shift in range(15)]
         for bit, (row, col), (mirror_row, mirror_col) in zip(
             bits, positions, mirror_positions, strict=True
@@ -1299,8 +1354,27 @@ class QRMatrix:
         return 0 <= row < size and 0 <= col < size
 
     @staticmethod
-    def mask(row: int, col: int) -> bool:
-        return (row + col) % 2 == 0
+    def mask(mask: int, row: int, col: int) -> bool:
+        match mask:
+            case 0:
+                return (row + col) % 2 == 0
+            case 1:
+                return row % 2 == 0
+            case 2:
+                return col % 3 == 0
+            case 3:
+                return (row + col) % 3 == 0
+            case 4:
+                return ((row // 2) + (col // 3)) % 2 == 0
+            case 5:
+                return ((row * col) % 2) + ((row * col) % 3) == 0
+            case 6:
+                return (((row * col) % 2) + ((row * col) % 3)) % 2 == 0
+            case 7:
+                return (((row + col) % 2) + ((row * col) % 3)) % 2 == 0
+            case _:
+                msg = "mask must be between 0 and 7"
+                raise ValueError(msg)
 
     @staticmethod
     def format_bits(error_correction: ErrorCorrection, *, mask: int) -> int:
@@ -1332,12 +1406,30 @@ class Args:
     ...     exit_code = Args.from_argv(["--text", "A", "--quiet-zone", "0"]).main()
     >>> exit_code
     0
-    >>> out.getvalue().splitlines()[0]
-    '              ████  ██    ██              '
+    >>> out.getvalue().splitlines()[0].startswith(ANSI_BLACK * 7)
+    True
     >>> Args.from_argv(["--text", "HELLO", "--error-correction", "H"]).error_correction
     'H'
     >>> Args.from_argv(["--text", "123", "--mode", "numeric"]).mode
     'numeric'
+    >>> Args.from_argv(["--text", "A", "--format", "bits"]).output_format
+    'bits'
+    >>> Args.from_argv([]).split_long_inputs
+    True
+    >>> Args.from_argv(["--no-split"]).split_long_inputs
+    False
+    >>> byte_capacity = QRVersions.for_version(40, "L").capacity("byte")
+    >>> [len(chunk.encode()) for chunk in Args().split_text("x" * (byte_capacity + 1), "byte")]
+    [2953, 1]
+    >>> Args().split_text("A" * 5, "alphanumeric", capacity=2)
+    ['AA', 'AA', 'A']
+    >>> out = StringIO()
+    >>> with redirect_stdout(out):
+    ...     exit_code = Args.from_argv(["--text", "A", "--format", "bits"]).main()
+    >>> exit_code
+    0
+    >>> out.getvalue().splitlines()[0]
+    '111111100101101111111'
     >>> out = StringIO()
     >>> with patch("sys.stdin", StringIO("from stdin")), redirect_stdout(out):
     ...     exit_code = Args.from_argv(["--quiet-zone", "0"]).main()
@@ -1352,6 +1444,14 @@ class Args:
     0
     >>> len(out.getvalue().splitlines())
     27
+    >>> out = StringIO()
+    >>> long_text = "x" * (QRVersions.for_version(40, "L").capacity("byte") + 1)
+    >>> with redirect_stdout(out):
+    ...     exit_code = Args.from_argv(["--text", long_text, "--format", "bits"]).main()
+    >>> exit_code
+    0
+    >>> "" in out.getvalue().splitlines()
+    True
     >>> err = StringIO()
     >>> with redirect_stderr(err):
     ...     Args.from_argv(["A"])  # doctest: +ELLIPSIS
@@ -1367,39 +1467,108 @@ class Args:
     """
 
     text: str | None = None
-    quiet_zone: int = 4
+    quiet_zone: int = 2
     error_correction: ErrorCorrection = "L"
     mode: RequestedMode = "byte"
+    output_format: OutputFormat = "terminal"
+    split_long_inputs: bool = True
 
     @classmethod
     def from_argv(cls, argv: list[str] | None = None) -> Args:
         parser = argparse.ArgumentParser(description="Generate a terminal QR code.")
         parser.add_argument("--text")
         parser.add_argument(
-            "--error-correction", choices=("L", "M", "Q", "H"), default="L"
+            "-l", "--error-correction", choices=("L", "M", "Q", "H"), default="L"
         )
         parser.add_argument(
             "--mode",
             choices=("auto", "numeric", "alphanumeric", "byte", "kanji"),
             default="byte",
         )
-        parser.add_argument("--quiet-zone", type=int, default=4)
+        parser.add_argument("-q", "--quiet-zone", type=int, default=2)
+        parser.add_argument(
+            "--format",
+            choices=("terminal", "bits"),
+            default="terminal",
+            help="output representation",
+        )
+        parser.add_argument(
+            "--split",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="split oversized input into multiple QR codes",
+        )
         namespace = parser.parse_args(argv)
         return cls(
             text=namespace.text,
             quiet_zone=namespace.quiet_zone,
             error_correction=cast("ErrorCorrection", namespace.error_correction),
             mode=cast("RequestedMode", namespace.mode),
+            output_format=cast("OutputFormat", namespace.format),
+            split_long_inputs=namespace.split,
         )
 
     def main(self) -> int:
         text = self.text if self.text is not None else sys.stdin.read()
-        print(
+        rendered = [self.render_code(code) for code in self.make_codes(text)]
+        print("\n\n".join(rendered))
+        return 0
+
+    def make_codes(self, text: str) -> list[QRCode]:
+        segment = QRSegment.from_text(text, mode=self.mode)
+        try:
+            QRVersions.for_segment(segment, error_correction=self.error_correction)
+        except ValueError:
+            if not self.split_long_inputs:
+                raise
+            return [
+                QRCode.from_text(
+                    chunk, error_correction=self.error_correction, mode=segment.mode
+                )
+                for chunk in self.split_text(text, segment.mode)
+            ]
+        return [
             QRCode.from_text(
                 text, error_correction=self.error_correction, mode=self.mode
-            ).render(quiet_zone=self.quiet_zone)
-        )
-        return 0
+            )
+        ]
+
+    def split_text(
+        self, text: str, mode: SegmentMode, *, capacity: int | None = None
+    ) -> list[str]:
+        max_capacity = capacity or QRVersions.for_version(
+            QRVersions.MAX_VERSION, self.error_correction
+        ).capacity(mode)
+        if mode != "byte":
+            return [
+                text[index : index + max_capacity]
+                for index in range(0, len(text), max_capacity)
+            ] or [""]
+
+        chunks: list[str] = []
+        current: list[str] = []
+        current_size = 0
+        for character in text:
+            character_size = len(character.encode())
+            if current and current_size + character_size > max_capacity:
+                chunks.append("".join(current))
+                current = []
+                current_size = 0
+            if character_size > max_capacity:
+                msg = "single character exceeds byte-mode QR capacity"
+                raise ValueError(msg)
+            current.append(character)
+            current_size += character_size
+        if current or not chunks:
+            chunks.append("".join(current))
+        return chunks
+
+    def render_code(self, code: QRCode) -> str:
+        match self.output_format:
+            case "terminal":
+                return code.render(quiet_zone=self.quiet_zone)
+            case "bits":
+                return code.render_bits()
 
 
 if __name__ == "__main__":

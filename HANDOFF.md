@@ -12,8 +12,10 @@ Implemented:
 - Supports error correction levels `L`, `M`, `Q`, and `H`.
 - Supports modes `auto`, `numeric`, `alphanumeric`, `byte`, and `kanji`.
 - Defaults text input to `byte` mode; `auto` remains available via `--mode auto`.
-- Uses a scanner-friendly default quiet zone of `4` modules.
+- CLI quiet-zone default is `2`, matching `qrterminal -q` default. `QRCode.render()` also defaults to `2`.
 - Renders terminal QR output for dark terminal themes by default: QR dark modules are spaces, light modules and the quiet zone are `██`.
+- Supports `--format bits` to print the raw QR matrix as rows of `0` and `1`.
+- Splits oversized input into multiple QR codes by default; pass `--no-split` to fail instead.
 - Keeps tests inline as doctests in `qr.py`.
 
 `README.md` documents current usage and development commands.
@@ -39,6 +41,8 @@ python3 -m doctest README.md qr.py
 - The QR implementation uses fixed mask pattern `0`.
 - Recent correctness fixes adjusted data placement around the timing column and format-bit placement/orientation.
 - Finder markers now reserve a full light separator row/column around the 7x7 marker; earlier code accidentally extended black border modules into the separator.
+- Reed-Solomon generation/remainder now matches QR-terminal/rsc.io style ECC; correctness coverage is kept in inline doctests.
+- The extra unittest/oracle test file was intentionally removed, and `Makefile` now runs doctests only for tests.
 - The default renderer intentionally makes the quiet zone visible as `██`; rendering it as plain spaces on a dark terminal produces an inverted border that phone cameras may reject.
 - The code has no runtime third-party dependencies.
 - `.codex` is an existing untracked empty file and was not touched.
