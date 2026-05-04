@@ -166,10 +166,12 @@ class QRVersion:
             case "numeric":
                 groups, remainder = divmod(available, 10)
                 if remainder >= self.NUMERIC_REMAINDER_TWO_DIGITS:
-                    return (groups * 3) + 2
-                if remainder >= self.NUMERIC_REMAINDER_ONE_DIGIT:
-                    return (groups * 3) + 1
-                return groups * 3
+                    capacity = (groups * 3) + 2
+                elif remainder >= self.NUMERIC_REMAINDER_ONE_DIGIT:
+                    capacity = (groups * 3) + 1
+                else:
+                    capacity = groups * 3
+                return capacity
             case "alphanumeric":
                 pairs, remainder = divmod(available, 11)
                 return (pairs * 2) + (
@@ -747,12 +749,14 @@ class QRSegment:
     @classmethod
     def best_mode(cls, text: str) -> SegmentMode:
         if cls.NUMERIC_RE.fullmatch(text) is not None:
-            return "numeric"
-        if cls.ALPHANUMERIC_RE.fullmatch(text) is not None:
-            return "alphanumeric"
-        if cls.can_encode_kanji(text):
-            return "kanji"
-        return "byte"
+            mode: SegmentMode = "numeric"
+        elif cls.ALPHANUMERIC_RE.fullmatch(text) is not None:
+            mode = "alphanumeric"
+        elif cls.can_encode_kanji(text):
+            mode = "kanji"
+        else:
+            mode = "byte"
+        return mode
 
     @classmethod
     def numeric(cls, text: str) -> QRSegment:
@@ -1234,12 +1238,14 @@ class QRRenderer:
         requested: TerminalImageProtocol = "auto",
     ) -> Literal["kitty", "iterm2"]:
         if requested != "auto":
-            return requested
-        if env.get("KITTY_WINDOW_ID") or "kitty" in env.get("TERM", "").lower():
-            return "kitty"
-        if env.get("TERM_PROGRAM") == "iTerm.app":
-            return "iterm2"
-        return "kitty"
+            protocol: Literal["kitty", "iterm2"] = requested
+        elif env.get("KITTY_WINDOW_ID") or "kitty" in env.get("TERM", "").lower():
+            protocol = "kitty"
+        elif env.get("TERM_PROGRAM") == "iTerm.app":
+            protocol = "iterm2"
+        else:
+            protocol = "kitty"
+        return protocol
 
     @staticmethod
     def render_kitty_png(png: bytes) -> str:
@@ -2088,36 +2094,47 @@ class Args:
         parser = argparse.ArgumentParser(description="Generate a terminal QR code.")
         cls.add_common_arguments(parser)
         namespace = parser.parse_args(argv)
-        if namespace.command == "wifi":
-            return cls(
-                command="wifi",
-                wifi_ssid=namespace.ssid,
-                wifi_auth=cast("WifiAuth", namespace.auth),
-                wifi_hidden=namespace.hidden,
-                quiet_zone=namespace.quiet_zone,
-                error_correction=cast("ErrorCorrection", namespace.error_correction),
-                output_format=cast("OutputFormat", namespace.format),
-                terminal_image_protocol=cast(
-                    "TerminalImageProtocol", namespace.terminal_image_protocol
-                ),
-                version=namespace.version,
-                output=namespace.output,
-                split_mode=cast("SplitMode", namespace.split_mode),
-            )
-        return cls(
-            command="text",
-            text=namespace.text,
-            quiet_zone=namespace.quiet_zone,
-            error_correction=cast("ErrorCorrection", namespace.error_correction),
-            mode=cast("RequestedMode", namespace.mode),
-            output_format=cast("OutputFormat", namespace.format),
-            terminal_image_protocol=cast(
-                "TerminalImageProtocol", namespace.terminal_image_protocol
-            ),
-            version=namespace.version,
-            output=namespace.output,
-            split_mode=cast("SplitMode", namespace.split_mode),
-        )
+        match namespace.command:
+            case "wifi":
+                assert namespace.ssid is not None
+                assert namespace.auth is not None
+                return cls(
+                    command="wifi",
+                    wifi_ssid=namespace.ssid,
+                    wifi_auth=cast("WifiAuth", namespace.auth),
+                    wifi_hidden=namespace.hidden,
+                    quiet_zone=namespace.quiet_zone,
+                    error_correction=cast(
+                        "ErrorCorrection", namespace.error_correction
+                    ),
+                    output_format=cast("OutputFormat", namespace.format),
+                    terminal_image_protocol=cast(
+                        "TerminalImageProtocol", namespace.terminal_image_protocol
+                    ),
+                    version=namespace.version,
+                    output=namespace.output,
+                    split_mode=cast("SplitMode", namespace.split_mode),
+                )
+            case "text":
+                return cls(
+                    command="text",
+                    text=namespace.text,
+                    quiet_zone=namespace.quiet_zone,
+                    error_correction=cast(
+                        "ErrorCorrection", namespace.error_correction
+                    ),
+                    mode=cast("RequestedMode", namespace.mode),
+                    output_format=cast("OutputFormat", namespace.format),
+                    terminal_image_protocol=cast(
+                        "TerminalImageProtocol", namespace.terminal_image_protocol
+                    ),
+                    version=namespace.version,
+                    output=namespace.output,
+                    split_mode=cast("SplitMode", namespace.split_mode),
+                )
+            case _:
+                msg = f"unknown command: {namespace.command}"
+                raise ValueError(msg)
 
     @classmethod
     def add_common_arguments(cls, parser: argparse.ArgumentParser) -> None:
@@ -2220,22 +2237,34 @@ class Args:
 
     def payload_text(self) -> str:
         if self.command != "wifi":
-            return self.text if self.text is not None else sys.stdin.read()
-        if self.wifi_ssid is None or self.wifi_auth is None:
-            msg = "wifi ssid is required"
-            raise ValueError(msg)
-        password = "" if self.wifi_auth == "nopass" else self.read_wifi_password()
-        return WifiPayload(
-            ssid=self.wifi_ssid, auth=self.wifi_auth, hidden=self.wifi_hidden
-        ).text(password)
+            text = self.text if self.text is not None else sys.stdin.read()
+        else:
+            if self.wifi_ssid is None or self.wifi_auth is None:
+                msg = "wifi ssid is required"
+                raise ValueError(msg)
+            password = "" if self.wifi_auth == "nopass" else self.read_wifi_password()
+            text = WifiPayload(
+                ssid=self.wifi_ssid, auth=self.wifi_auth, hidden=self.wifi_hidden
+            ).text(password)
+        return text
 
     def job(self) -> QRJob:
-        return QRJob(
-            error_correction=self.error_correction,
-            mode="byte" if self.command == "wifi" else cast("RequestedMode", self.mode),
-            version=self.version,
-            split_mode=self.split_mode,
-        )
+        if self.command == "wifi":
+            job = QRJob(
+                error_correction=self.error_correction,
+                mode="byte",
+                version=self.version,
+                split_mode=self.split_mode,
+            )
+        else:
+            assert self.mode is not None
+            job = QRJob(
+                error_correction=self.error_correction,
+                mode=self.mode,
+                version=self.version,
+                split_mode=self.split_mode,
+            )
+        return job
 
     def output_config(self) -> OutputConfig:
         return OutputConfig(
@@ -2255,9 +2284,11 @@ class Args:
     @staticmethod
     def read_wifi_password() -> str:
         if sys.stdin.isatty():
-            return getpass.getpass("Password: ")
-        print("Password: ", end="", file=sys.stderr, flush=True)
-        return sys.stdin.read().rstrip("\n")
+            password = getpass.getpass("Password: ")
+        else:
+            print("Password: ", end="", file=sys.stderr, flush=True)
+            password = sys.stdin.read().rstrip("\n")
+        return password
 
     @staticmethod
     def qr_version(value: str) -> int:
