@@ -1841,7 +1841,7 @@ class OutputWriter:
             self.output_format in {"terminal", "bits", "ascii", "terminal_img"}
             and self.output is None
         ):
-            self.write_stdout_codes(cast("list[str]", rendered))
+            self.write_stdout_codes(cast(list[str], rendered))
             return
 
         ext = self.output_format
@@ -2121,19 +2121,19 @@ class Args:
                 return cls(
                     command="wifi",
                     wifi_ssid=namespace.ssid,
-                    wifi_auth=cast("WifiAuth", namespace.auth),
+                    wifi_auth=cast(WifiAuth, namespace.auth),
                     wifi_hidden=namespace.hidden,
                     quiet_zone=namespace.quiet_zone,
                     error_correction=cast(
                         "ErrorCorrection", namespace.error_correction
                     ),
-                    output_format=cast("OutputFormat", namespace.format),
+                    output_format=cast(OutputFormat, namespace.format),
                     terminal_image_protocol=cast(
                         "TerminalImageProtocol", namespace.terminal_image_protocol
                     ),
                     version=namespace.version,
                     output=namespace.output,
-                    split_mode=cast("SplitMode", namespace.split_mode),
+                    split_mode=cast(SplitMode, namespace.split_mode),
                 )
             case "text":
                 return cls(
@@ -2143,14 +2143,14 @@ class Args:
                     error_correction=cast(
                         "ErrorCorrection", namespace.error_correction
                     ),
-                    mode=cast("RequestedMode", namespace.mode),
-                    output_format=cast("OutputFormat", namespace.format),
+                    mode=cast(RequestedMode, namespace.mode),
+                    output_format=cast(OutputFormat, namespace.format),
                     terminal_image_protocol=cast(
                         "TerminalImageProtocol", namespace.terminal_image_protocol
                     ),
                     version=namespace.version,
                     output=namespace.output,
-                    split_mode=cast("SplitMode", namespace.split_mode),
+                    split_mode=cast(SplitMode, namespace.split_mode),
                 )
             case _:
                 msg = f"unknown command: {namespace.command}"
