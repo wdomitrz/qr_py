@@ -846,6 +846,8 @@ class QRCode:
     >>> rendered.count("\\n")
     22
     >>> QRCode.from_text("1" * 42).version
+    2
+    >>> QRCode.from_text("1" * 42, mode="byte").version
     3
     >>> all(
     ...     QRCode.from_text("x" * QRVersions.for_version(version, "L").capacity("byte"), mode="byte").version
@@ -869,6 +871,8 @@ class QRCode:
     ...
     ValueError: version 1-L byte QR codes support at most 17 UTF-8 bytes
     >>> QRCode.from_text("1234567890").mode
+    'numeric'
+    >>> QRCode.from_text("asdfasdf").mode
     'byte'
     >>> QRCode.from_text("1234567890", mode="auto").mode
     'numeric'
@@ -902,7 +906,7 @@ class QRCode:
     matrix: list[list[bool]]
 
     DEFAULT_ERROR_CORRECTION: ClassVar[ErrorCorrection] = "L"
-    DEFAULT_MODE: ClassVar[RequestedMode] = "byte"
+    DEFAULT_MODE: ClassVar[RequestedMode] = "auto"
 
     @property
     def size(self) -> int:
@@ -1665,7 +1669,7 @@ class QRJob:
     """
 
     error_correction: ErrorCorrection = "L"
-    mode: RequestedMode = "byte"
+    mode: RequestedMode = "auto"
     version: int | None = None
     split_mode: SplitMode = "all"
 
@@ -2120,7 +2124,7 @@ class Args:
         parser.add_argument(
             "--mode",
             choices=("auto", "numeric", "alphanumeric", "byte", "kanji"),
-            default="byte",
+            default="auto",
         )
         parser.add_argument("-q", "--quiet-zone", type=int, default=2)
         parser.add_argument(
