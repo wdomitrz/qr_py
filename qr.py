@@ -166,12 +166,11 @@ class QRVersion:
             case "numeric":
                 groups, remainder = divmod(available, 10)
                 if remainder >= self.NUMERIC_REMAINDER_TWO_DIGITS:
-                    capacity = (groups * 3) + 2
+                    return (groups * 3) + 2
                 elif remainder >= self.NUMERIC_REMAINDER_ONE_DIGIT:
-                    capacity = (groups * 3) + 1
+                    return (groups * 3) + 1
                 else:
-                    capacity = groups * 3
-                return capacity
+                    return groups * 3
             case "alphanumeric":
                 pairs, remainder = divmod(available, 11)
                 return (pairs * 2) + (
@@ -749,14 +748,13 @@ class QRSegment:
     @classmethod
     def best_mode(cls, text: str) -> SegmentMode:
         if cls.NUMERIC_RE.fullmatch(text) is not None:
-            mode: SegmentMode = "numeric"
+            return "numeric"
         elif cls.ALPHANUMERIC_RE.fullmatch(text) is not None:
-            mode = "alphanumeric"
+            return "alphanumeric"
         elif cls.can_encode_kanji(text):
-            mode = "kanji"
+            return "kanji"
         else:
-            mode = "byte"
-        return mode
+            return "byte"
 
     @classmethod
     def numeric(cls, text: str) -> QRSegment:
@@ -1238,14 +1236,13 @@ class QRRenderer:
         requested: TerminalImageProtocol = "auto",
     ) -> Literal["kitty", "iterm2"]:
         if requested != "auto":
-            protocol: Literal["kitty", "iterm2"] = requested
+            return requested
         elif env.get("KITTY_WINDOW_ID") or "kitty" in env.get("TERM", "").lower():
-            protocol = "kitty"
+            return "kitty"
         elif env.get("TERM_PROGRAM") == "iTerm.app":
-            protocol = "iterm2"
+            return "iterm2"
         else:
-            protocol = "kitty"
-        return protocol
+            return "kitty"
 
     @staticmethod
     def render_kitty_png(png: bytes) -> str:
@@ -2237,20 +2234,19 @@ class Args:
 
     def payload_text(self) -> str:
         if self.command != "wifi":
-            text = self.text if self.text is not None else sys.stdin.read()
+            return self.text if self.text is not None else sys.stdin.read()
         else:
             if self.wifi_ssid is None or self.wifi_auth is None:
                 msg = "wifi ssid is required"
                 raise ValueError(msg)
             password = "" if self.wifi_auth == "nopass" else self.read_wifi_password()
-            text = WifiPayload(
+            return WifiPayload(
                 ssid=self.wifi_ssid, auth=self.wifi_auth, hidden=self.wifi_hidden
             ).text(password)
-        return text
 
     def job(self) -> QRJob:
         if self.command == "wifi":
-            job = QRJob(
+            return QRJob(
                 error_correction=self.error_correction,
                 mode="byte",
                 version=self.version,
@@ -2258,13 +2254,12 @@ class Args:
             )
         else:
             assert self.mode is not None
-            job = QRJob(
+            return QRJob(
                 error_correction=self.error_correction,
                 mode=self.mode,
                 version=self.version,
                 split_mode=self.split_mode,
             )
-        return job
 
     def output_config(self) -> OutputConfig:
         return OutputConfig(
@@ -2284,11 +2279,10 @@ class Args:
     @staticmethod
     def read_wifi_password() -> str:
         if sys.stdin.isatty():
-            password = getpass.getpass("Password: ")
+            return getpass.getpass("Password: ")
         else:
             print("Password: ", end="", file=sys.stderr, flush=True)
-            password = sys.stdin.read().rstrip("\n")
-        return password
+            return sys.stdin.read().rstrip("\n")
 
     @staticmethod
     def qr_version(value: str) -> int:
