@@ -1,4 +1,4 @@
-# qr
+# qr_py
 
 Generate QR codes in the terminal.
 
