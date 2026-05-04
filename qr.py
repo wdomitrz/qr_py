@@ -17,7 +17,7 @@ import sys
 import zlib
 from collections.abc import Mapping
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import cycle
 from pathlib import Path
 from typing import ClassVar, Literal, cast
@@ -38,7 +38,7 @@ ANSI_BLACK = "\033[40m  \033[0m"
 ANSI_WHITE = "\033[47m  \033[0m"
 
 
-@dataclass(frozen=True, kw_only=True)
+@dataclass(kw_only=True)
 class BitBuffer:
     """Collect big-endian bits.
 
@@ -51,25 +51,18 @@ class BitBuffer:
     [64, 32]
     """
 
-    bits: list[bool] | None = None
-
-    def __post_init__(self) -> None:
-        if self.bits is None:
-            object.__setattr__(self, "bits", [])
+    bits: list[bool] = field(default_factory=list)
 
     def append(self, value: int, bit_count: int) -> None:
-        assert self.bits is not None
         self.bits.extend(
             bool(value & (1 << shift)) for shift in range(bit_count - 1, -1, -1)
         )
 
     def pad_to_byte(self) -> None:
-        assert self.bits is not None
         while len(self.bits) % 8 != 0:
             self.bits.append(False)
 
     def as_codewords(self) -> list[int]:
-        assert self.bits is not None
         return [
             sum(
                 1 << (7 - offset)
@@ -770,7 +763,7 @@ class QRSegment:
         for index in range(0, len(text), 3):
             chunk = text[index : index + 3]
             buffer.append(int(chunk), (len(chunk) * 3) + 1)
-        return cls(mode="numeric", character_count=len(text), bits=buffer.bits or [])
+        return cls(mode="numeric", character_count=len(text), bits=buffer.bits)
 
     @classmethod
     def alphanumeric(cls, text: str) -> QRSegment:
@@ -785,9 +778,7 @@ class QRSegment:
             buffer.append(value, 11)
         if len(text) % 2:
             buffer.append(cls.ALPHANUMERIC_VALUES[text[-1]], 6)
-        return cls(
-            mode="alphanumeric", character_count=len(text), bits=buffer.bits or []
-        )
+        return cls(mode="alphanumeric", character_count=len(text), bits=buffer.bits)
 
     @classmethod
     def byte(cls, text: str) -> QRSegment:
@@ -795,7 +786,7 @@ class QRSegment:
         data = text.encode()
         for byte in data:
             buffer.append(byte, 8)
-        return cls(mode="byte", character_count=len(data), bits=buffer.bits or [])
+        return cls(mode="byte", character_count=len(data), bits=buffer.bits)
 
     @classmethod
     def kanji(cls, text: str) -> QRSegment:
@@ -806,7 +797,7 @@ class QRSegment:
                 msg = "text cannot be encoded in kanji mode"
                 raise ValueError(msg)
             buffer.append(value, 13)
-        return cls(mode="kanji", character_count=len(text), bits=buffer.bits or [])
+        return cls(mode="kanji", character_count=len(text), bits=buffer.bits)
 
     @classmethod
     def can_encode_kanji(cls, text: str) -> bool:
@@ -989,9 +980,7 @@ class QRCode:
         buffer = BitBuffer()
         for byte in data:
             buffer.append(byte, 8)
-        segment = QRSegment(
-            mode="byte", character_count=len(data), bits=buffer.bits or []
-        )
+        segment = QRSegment(mode="byte", character_count=len(data), bits=buffer.bits)
         metadata = version or QRVersions.for_segment(
             segment, error_correction=error_correction
         )
@@ -1014,7 +1003,7 @@ class QRCode:
         for bit in segment.bits:
             buffer.append(int(bit), 1)
 
-        remaining = (version.data_codewords * 8) - len(buffer.bits or [])
+        remaining = (version.data_codewords * 8) - len(buffer.bits)
         buffer.append(0, min(4, remaining))
         buffer.pad_to_byte()
 
@@ -1621,6 +1610,253 @@ class QRMatrix:
 
 
 @dataclass(frozen=True, kw_only=True)
+class WifiPayload:
+    """Build standard WiFi QR payload text.
+
+    >>> print(WifiPayload.escape(r"semi;colon\\back:slash,comma"))
+    semi\\;colon\\\\back\\:slash\\,comma
+    >>> print(WifiPayload(ssid="Cafe;Net").text("secret"))
+    WIFI:T:WPA;S:Cafe\\;Net;P:secret;;
+    >>> WifiPayload(ssid="Cafe", auth="nopass").text("")
+    'WIFI:T:nopass;S:Cafe;;'
+    """
+
+    ssid: str
+    auth: WifiAuth = "WPA"
+    hidden: bool = False
+
+    def text(self, password: str) -> str:
+        parts = [
+            "WIFI:",
+            f"T:{self.auth};",
+            f"S:{self.escape(self.ssid)};",
+        ]
+        if self.auth != "nopass":
+            parts.append(f"P:{self.escape(password)};")
+        if self.hidden:
+            parts.append("H:true;")
+        parts.append(";")
+        return "".join(parts)
+
+    @staticmethod
+    def escape(text: str) -> str:
+        return "".join(
+            f"\\{character}" if character in r"\;:," else character
+            for character in text
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class QRJob:
+    """Turn payload text into one or more QR codes.
+
+    >>> byte_capacity = QRVersions.for_version(40, "L").capacity("byte")
+    >>> [len(chunk.encode()) for chunk in QRJob().split_text("x" * (byte_capacity + 1), "byte")]
+    [2953, 1]
+    >>> version_1_capacity = QRVersions.for_version(1, "L").capacity("byte")
+    >>> [len(chunk.encode()) for chunk in QRJob(version=1).split_text("x" * (version_1_capacity + 1), "byte")]
+    [17, 1]
+    >>> [code.version for code in QRJob(version=1).codes("x" * (version_1_capacity + 1))]
+    [1, 1]
+    >>> QRJob(version=1, split_mode="disabled").codes("x" * (version_1_capacity + 1))
+    Traceback (most recent call last):
+    ...
+    ValueError: version 1-L byte QR codes support at most 17 UTF-8 bytes
+    """
+
+    error_correction: ErrorCorrection = "L"
+    mode: RequestedMode = "byte"
+    version: int | None = None
+    split_mode: SplitMode = "all"
+
+    def codes(self, text: str) -> list[QRCode]:
+        segment = QRSegment.from_text(text, mode=self.mode)
+        try:
+            self.version_metadata(segment)
+        except ValueError:
+            if self.split_mode == "disabled":
+                raise
+            return [
+                QRCode.from_text(
+                    chunk,
+                    error_correction=self.error_correction,
+                    mode=segment.mode,
+                    version=self.version,
+                )
+                for chunk in self.split_text(text, segment.mode)
+            ]
+        return [
+            QRCode.from_text(
+                text,
+                error_correction=self.error_correction,
+                mode=self.mode,
+                version=self.version,
+            )
+        ]
+
+    def version_metadata(self, segment: QRSegment) -> QRVersion:
+        if self.version is not None:
+            metadata = QRVersions.for_version(self.version, self.error_correction)
+            used_bits = segment.total_bits(metadata.version)
+            if used_bits is not None and used_bits <= metadata.data_codewords * 8:
+                return metadata
+            msg = self.capacity_error(metadata, segment)
+            raise ValueError(msg)
+        return QRVersions.for_segment(segment, error_correction=self.error_correction)
+
+    def capacity_error(self, metadata: QRVersion, segment: QRSegment) -> str:
+        return (
+            f"version {metadata.version}-{self.error_correction} {segment.mode} QR "
+            f"codes support at most {metadata.capacity(segment.mode)} "
+            f"{segment.unit_name}"
+        )
+
+    def split_text(
+        self, text: str, mode: SegmentMode, *, capacity: int | None = None
+    ) -> list[str]:
+        max_capacity = capacity or QRVersions.for_version(
+            self.version or QRVersions.MAX_VERSION, self.error_correction
+        ).capacity(mode)
+        if mode != "byte":
+            return [
+                text[index : index + max_capacity]
+                for index in range(0, len(text), max_capacity)
+            ] or [""]
+
+        chunks: list[str] = []
+        current: list[str] = []
+        current_size = 0
+        for character in text:
+            character_size = len(character.encode())
+            if current and current_size + character_size > max_capacity:
+                chunks.append("".join(current))
+                current = []
+                current_size = 0
+            if character_size > max_capacity:
+                msg = "single character exceeds byte-mode QR capacity"
+                raise ValueError(msg)
+            current.append(character)
+            current_size += character_size
+        if current or not chunks:
+            chunks.append("".join(current))
+        return chunks
+
+
+@dataclass(frozen=True, kw_only=True)
+class OutputConfig:
+    """Render a QR code using one configured output format.
+
+    >>> OutputConfig(output_format="bits").render(QRCode.from_text("A")).splitlines()[0]
+    '111111100101101111111'
+    >>> OutputConfig(output_format="ascii", quiet_zone=0).render(QRCode.from_text("A")).splitlines()[0]
+    '#######  # ## #######'
+    """
+
+    output_format: OutputFormat = "terminal"
+    quiet_zone: int = 2
+    terminal_image_protocol: TerminalImageProtocol = "auto"
+
+    def render(self, code: QRCode) -> str | bytes:
+        match self.output_format:
+            case "terminal":
+                return QRRenderer.render_terminal(
+                    code.rows(), quiet_zone=self.quiet_zone
+                )
+            case "bits":
+                return QRRenderer.render_bits(code.rows())
+            case "ascii":
+                return QRRenderer.render_ascii(code.rows(), quiet_zone=self.quiet_zone)
+            case "svg":
+                return QRRenderer.render_svg(code.rows(), quiet_zone=self.quiet_zone)
+            case "bmp":
+                return QRRenderer.render_bmp(code.rows(), quiet_zone=self.quiet_zone)
+            case "png":
+                return QRRenderer.render_png(code.rows(), quiet_zone=self.quiet_zone)
+            case "terminal_img":
+                return QRRenderer.render_terminal_image(
+                    code.rows(),
+                    quiet_zone=self.quiet_zone,
+                    protocol=self.terminal_image_protocol,
+                )
+            case "html":
+                return QRRenderer.render_html([code.rows()], quiet_zone=self.quiet_zone)
+
+
+@dataclass(frozen=True, kw_only=True)
+class OutputWriter:
+    """Write rendered QR outputs to stdout or files.
+
+    >>> writer = OutputWriter(output_format="svg", output="qr")
+    >>> writer.output_path("svg")
+    PosixPath('qr.svg')
+    >>> writer = OutputWriter(output_format="png", output="qr")
+    >>> writer.output_path("png", index=1, total=2)
+    PosixPath('qr-2.png')
+    """
+
+    output_format: OutputFormat = "terminal"
+    output: str | None = None
+    split_mode: SplitMode = "all"
+    quiet_zone: int = 2
+
+    def write(
+        self, rendered: list[str | bytes], rows_list: list[list[list[int]]]
+    ) -> None:
+        if self.output_format == "html":
+            self.write_text_output(
+                QRRenderer.render_html(rows_list, quiet_zone=self.quiet_zone),
+                self.output_path("html"),
+            )
+            return
+
+        if (
+            self.output_format in {"terminal", "bits", "ascii", "terminal_img"}
+            and self.output is None
+        ):
+            self.write_stdout_codes(cast("list[str]", rendered))
+            return
+
+        ext = self.output_format
+        for index, data in enumerate(rendered):
+            path = self.output_path(ext, index=index, total=len(rendered))
+            if isinstance(data, bytes):
+                path.write_bytes(data)
+            else:
+                self.write_text_output(data, path)
+
+    @staticmethod
+    def write_text_output(data: str, path: Path) -> None:
+        path.write_text(data, encoding="utf-8")
+
+    def write_stdout_codes(self, rendered: list[str]) -> None:
+        if self.split_mode != "wait" or len(rendered) <= 1:
+            print("\n\n".join(rendered))
+            return
+        for index, data in enumerate(rendered):
+            if index:
+                self.wait_for_next_code()
+            print(data)
+
+    @staticmethod
+    def wait_for_next_code() -> None:
+        print("Press Enter for next QR code...", end="", file=sys.stderr, flush=True)
+        try:
+            with Path("/dev/tty").open(encoding="utf-8") as tty:
+                tty.readline()
+        except OSError:
+            with suppress(EOFError):
+                input()
+
+    def output_path(self, extension: str, *, index: int = 0, total: int = 1) -> Path:
+        base = Path(self.output or "output")
+        suffix = f".{extension}"
+        root = base.with_suffix("") if base.suffix == suffix else base
+        if total > 1:
+            root = Path(f"{root}-{index + 1}")
+        return root if root.suffix == suffix else root.with_suffix(suffix)
+
+
+@dataclass(frozen=True, kw_only=True)
 class Args:
     """CLI adapter.
 
@@ -1652,11 +1888,11 @@ class Args:
     'qr.svg'
     >>> Args.from_argv(["wifi", "--ssid", "Cafe"]).command
     'wifi'
-    >>> print(Args.wifi_escape(r"semi;colon\\back:slash,comma"))
+    >>> print(WifiPayload.escape(r"semi;colon\\back:slash,comma"))
     semi\\;colon\\\\back\\:slash\\,comma
-    >>> print(Args(command="wifi", wifi_ssid="Cafe;Net").wifi_payload("secret"))
+    >>> print(WifiPayload(ssid="Cafe;Net").text("secret"))
     WIFI:T:WPA;S:Cafe\\;Net;P:secret;;
-    >>> Args(command="wifi", wifi_ssid="Cafe", wifi_auth="nopass").wifi_payload("")
+    >>> WifiPayload(ssid="Cafe", auth="nopass").text("")
     'WIFI:T:nopass;S:Cafe;;'
     >>> Args.from_argv([]).split_mode
     'all'
@@ -1665,12 +1901,12 @@ class Args:
     >>> Args.from_argv(["--split-mode", "disabled"]).split_mode
     'disabled'
     >>> byte_capacity = QRVersions.for_version(40, "L").capacity("byte")
-    >>> [len(chunk.encode()) for chunk in Args().split_text("x" * (byte_capacity + 1), "byte")]
+    >>> [len(chunk.encode()) for chunk in QRJob().split_text("x" * (byte_capacity + 1), "byte")]
     [2953, 1]
     >>> version_1_capacity = QRVersions.for_version(1, "L").capacity("byte")
-    >>> [len(chunk.encode()) for chunk in Args(version=1).split_text("x" * (version_1_capacity + 1), "byte")]
+    >>> [len(chunk.encode()) for chunk in QRJob(version=1).split_text("x" * (version_1_capacity + 1), "byte")]
     [17, 1]
-    >>> Args().split_text("A" * 5, "alphanumeric", capacity=2)
+    >>> QRJob().split_text("A" * 5, "alphanumeric", capacity=2)
     ['AA', 'AA', 'A']
     >>> out = StringIO()
     >>> with redirect_stdout(out):
@@ -1679,7 +1915,7 @@ class Args:
     0
     >>> out.getvalue().splitlines()[0]
     '111111100101101111111'
-    >>> Args.from_argv(["--text", "A", "--version", "10"]).make_codes("A")[0].version
+    >>> Args.from_argv(["--text", "A", "--version", "10"]).job().codes("A")[0].version
     10
     >>> err = StringIO()
     >>> with redirect_stderr(err):
@@ -1693,11 +1929,11 @@ class Args:
     Traceback (most recent call last):
     ...
     SystemExit: 2
-    >>> Args(version=1, split_mode="disabled").make_codes("x" * (version_1_capacity + 1))
+    >>> QRJob(version=1, split_mode="disabled").codes("x" * (version_1_capacity + 1))
     Traceback (most recent call last):
     ...
     ValueError: version 1-L byte QR codes support at most 17 UTF-8 bytes
-    >>> [code.version for code in Args(version=1).make_codes("x" * (version_1_capacity + 1))]
+    >>> [code.version for code in QRJob(version=1).codes("x" * (version_1_capacity + 1))]
     [1, 1]
     >>> out = StringIO()
     >>> with redirect_stdout(out):
@@ -1963,21 +2199,48 @@ class Args:
         )
 
     def main(self) -> int:
-        if self.command == "wifi":
-            password = "" if self.wifi_auth == "nopass" else self.read_wifi_password()
-            codes = [
-                QRCode.from_text(
-                    self.wifi_payload(password),
-                    error_correction=self.error_correction,
-                    mode="byte",
-                    version=self.version,
-                )
-            ]
-        else:
-            text = self.text if self.text is not None else sys.stdin.read()
-            codes = self.make_codes(text)
-        self.write_codes(codes)
+        codes = self.codes()
+        renderer = self.output_config()
+        rendered = [renderer.render(code) for code in codes]
+        self.writer().write(rendered, [code.rows() for code in codes])
         return 0
+
+    def codes(self) -> list[QRCode]:
+        return self.job().codes(self.payload_text())
+
+    def payload_text(self) -> str:
+        if self.command != "wifi":
+            return self.text if self.text is not None else sys.stdin.read()
+        if self.wifi_ssid is None:
+            msg = "wifi ssid is required"
+            raise ValueError(msg)
+        password = "" if self.wifi_auth == "nopass" else self.read_wifi_password()
+        return WifiPayload(
+            ssid=self.wifi_ssid, auth=self.wifi_auth, hidden=self.wifi_hidden
+        ).text(password)
+
+    def job(self) -> QRJob:
+        return QRJob(
+            error_correction=self.error_correction,
+            mode="byte" if self.command == "wifi" else self.mode,
+            version=self.version,
+            split_mode=self.split_mode,
+        )
+
+    def output_config(self) -> OutputConfig:
+        return OutputConfig(
+            output_format=self.output_format,
+            quiet_zone=self.quiet_zone,
+            terminal_image_protocol=self.terminal_image_protocol,
+        )
+
+    def writer(self) -> OutputWriter:
+        return OutputWriter(
+            output_format=self.output_format,
+            output=self.output,
+            split_mode=self.split_mode,
+            quiet_zone=self.quiet_zone,
+        )
 
     @staticmethod
     def read_wifi_password() -> str:
@@ -1997,179 +2260,6 @@ class Args:
             msg = "version must be between 1 and 40"
             raise argparse.ArgumentTypeError(msg)
         return version
-
-    def wifi_payload(self, password: str) -> str:
-        if self.wifi_ssid is None:
-            msg = "wifi ssid is required"
-            raise ValueError(msg)
-        parts = [
-            "WIFI:",
-            f"T:{self.wifi_auth};",
-            f"S:{self.wifi_escape(self.wifi_ssid)};",
-        ]
-        if self.wifi_auth != "nopass":
-            parts.append(f"P:{self.wifi_escape(password)};")
-        if self.wifi_hidden:
-            parts.append("H:true;")
-        parts.append(";")
-        return "".join(parts)
-
-    @staticmethod
-    def wifi_escape(text: str) -> str:
-        return "".join(
-            f"\\{character}" if character in r"\;:," else character
-            for character in text
-        )
-
-    def make_codes(self, text: str) -> list[QRCode]:
-        segment = QRSegment.from_text(text, mode=self.mode)
-        try:
-            self.version_metadata(segment)
-        except ValueError:
-            if self.split_mode == "disabled":
-                raise
-            return [
-                QRCode.from_text(
-                    chunk,
-                    error_correction=self.error_correction,
-                    mode=segment.mode,
-                    version=self.version,
-                )
-                for chunk in self.split_text(text, segment.mode)
-            ]
-        return [
-            QRCode.from_text(
-                text,
-                error_correction=self.error_correction,
-                mode=self.mode,
-                version=self.version,
-            )
-        ]
-
-    def version_metadata(self, segment: QRSegment) -> QRVersion:
-        if self.version is not None:
-            metadata = QRVersions.for_version(self.version, self.error_correction)
-            used_bits = segment.total_bits(metadata.version)
-            if used_bits is not None and used_bits <= metadata.data_codewords * 8:
-                return metadata
-            msg = (
-                f"version {metadata.version}-{self.error_correction} {segment.mode} QR "
-                f"codes support at most {metadata.capacity(segment.mode)} "
-                f"{segment.unit_name}"
-            )
-            raise ValueError(msg)
-        return QRVersions.for_segment(segment, error_correction=self.error_correction)
-
-    def split_text(
-        self, text: str, mode: SegmentMode, *, capacity: int | None = None
-    ) -> list[str]:
-        max_capacity = capacity or QRVersions.for_version(
-            self.version or QRVersions.MAX_VERSION, self.error_correction
-        ).capacity(mode)
-        if mode != "byte":
-            return [
-                text[index : index + max_capacity]
-                for index in range(0, len(text), max_capacity)
-            ] or [""]
-
-        chunks: list[str] = []
-        current: list[str] = []
-        current_size = 0
-        for character in text:
-            character_size = len(character.encode())
-            if current and current_size + character_size > max_capacity:
-                chunks.append("".join(current))
-                current = []
-                current_size = 0
-            if character_size > max_capacity:
-                msg = "single character exceeds byte-mode QR capacity"
-                raise ValueError(msg)
-            current.append(character)
-            current_size += character_size
-        if current or not chunks:
-            chunks.append("".join(current))
-        return chunks
-
-    def render_code(self, code: QRCode) -> str | bytes:
-        match self.output_format:
-            case "terminal":
-                return QRRenderer.render_terminal(
-                    code.rows(), quiet_zone=self.quiet_zone
-                )
-            case "bits":
-                return QRRenderer.render_bits(code.rows())
-            case "ascii":
-                return QRRenderer.render_ascii(code.rows(), quiet_zone=self.quiet_zone)
-            case "svg":
-                return QRRenderer.render_svg(code.rows(), quiet_zone=self.quiet_zone)
-            case "bmp":
-                return QRRenderer.render_bmp(code.rows(), quiet_zone=self.quiet_zone)
-            case "png":
-                return QRRenderer.render_png(code.rows(), quiet_zone=self.quiet_zone)
-            case "terminal_img":
-                return QRRenderer.render_terminal_image(
-                    code.rows(),
-                    quiet_zone=self.quiet_zone,
-                    protocol=self.terminal_image_protocol,
-                )
-            case "html":
-                return QRRenderer.render_html([code.rows()], quiet_zone=self.quiet_zone)
-
-    def write_codes(self, codes: list[QRCode]) -> None:
-        rows_list = [code.rows() for code in codes]
-        if self.output_format == "html":
-            self.write_text_output(
-                QRRenderer.render_html(rows_list, quiet_zone=self.quiet_zone),
-                self.output_path("html"),
-            )
-            return
-
-        rendered = [self.render_code(code) for code in codes]
-        if (
-            self.output_format in {"terminal", "bits", "ascii", "terminal_img"}
-            and self.output is None
-        ):
-            self.write_stdout_codes(cast("list[str]", rendered))
-            return
-
-        ext = self.output_format
-        for index, data in enumerate(rendered):
-            path = self.output_path(ext, index=index, total=len(rendered))
-            if isinstance(data, bytes):
-                path.write_bytes(data)
-            else:
-                self.write_text_output(data, path)
-
-    @staticmethod
-    def write_text_output(data: str, path: Path) -> None:
-        path.write_text(data, encoding="utf-8")
-
-    def write_stdout_codes(self, rendered: list[str]) -> None:
-        if self.split_mode != "wait" or len(rendered) <= 1:
-            print("\n\n".join(rendered))
-            return
-        for index, data in enumerate(rendered):
-            if index:
-                self.wait_for_next_code()
-            print(data)
-
-    @staticmethod
-    def wait_for_next_code() -> None:
-        print("Press Enter for next QR code...", end="", file=sys.stderr, flush=True)
-        try:
-            with Path("/dev/tty").open(encoding="utf-8") as tty:
-                tty.readline()
-        except OSError:
-            with suppress(EOFError):
-                input()
-
-    def output_path(self, extension: str, *, index: int = 0, total: int = 1) -> Path:
-        base = Path(self.output or "output")
-        suffix = f".{extension}"
-        root = base.with_suffix("") if base.suffix == suffix else base
-        if total > 1:
-            root = Path(f"{root}-{index + 1}")
-        return root if root.suffix == suffix else root.with_suffix(suffix)
 
 
 if __name__ == "__main__":
