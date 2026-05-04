@@ -738,7 +738,7 @@ class QRSegment:
     LARGE_VERSION_MAX: ClassVar[int] = 40
 
     @property
-    def unit_name(self) -> str:
+    def unit_name(self) -> Literal["UTF-8 bytes", "characters"]:
         return "UTF-8 bytes" if self.mode == "byte" else "characters"
 
     @classmethod
@@ -1875,7 +1875,9 @@ class OutputWriter:
             with suppress(EOFError):
                 input()
 
-    def output_path(self, extension: str, *, index: int = 0, total: int = 1) -> Path:
+    def output_path(
+        self, extension: OutputFormat, *, index: int = 0, total: int = 1
+    ) -> Path:
         base = Path(self.output or "output")
         suffix = f".{extension}"
         root = base.with_suffix("") if base.suffix == suffix else base
