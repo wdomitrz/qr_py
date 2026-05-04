@@ -871,6 +871,12 @@ class QRCode:
     >>> max_code = QRCode.from_text("x" * QRVersions.for_version(40, "H").capacity("byte"), error_correction="H", mode="byte")
     >>> (max_code.version, max_code.error_correction, max_code.size)
     (40, 'H', 177)
+    >>> QRCode.from_text("A", version=10).version
+    10
+    >>> QRCode.from_text("x" * 18, version=1)
+    Traceback (most recent call last):
+    ...
+    ValueError: version 1-L byte QR codes support at most 17 UTF-8 bytes
     >>> QRCode.from_text("1234567890").mode
     'byte'
     >>> QRCode.from_text("1234567890", mode="auto").mode
@@ -927,17 +933,30 @@ class QRCode:
         *,
         error_correction: ErrorCorrection = DEFAULT_ERROR_CORRECTION,
         mode: RequestedMode = DEFAULT_MODE,
+        version: int | None = None,
     ) -> QRCode:
         segment = QRSegment.from_text(text, mode=mode)
-        version = QRVersions.for_segment(segment, error_correction=error_correction)
-        data_codewords = cls.encode_segment(segment, version)
-        blocks = cls.make_blocks(data_codewords, version)
+        metadata = (
+            QRVersions.for_version(version, error_correction)
+            if version is not None
+            else QRVersions.for_segment(segment, error_correction=error_correction)
+        )
+        used_bits = segment.total_bits(metadata.version)
+        if used_bits is None or used_bits > metadata.data_codewords * 8:
+            msg = (
+                f"version {metadata.version}-{error_correction} {segment.mode} QR "
+                f"codes support at most {metadata.capacity(segment.mode)} "
+                f"{segment.unit_name}"
+            )
+            raise ValueError(msg)
+        data_codewords = cls.encode_segment(segment, metadata)
+        blocks = cls.make_blocks(data_codewords, metadata)
         codewords = cls.interleave_blocks(blocks)
         error_codewords = [codeword for _, error in blocks for codeword in error]
-        matrix = QRMatrix.from_codewords(codewords, version)
+        matrix = QRMatrix.from_codewords(codewords, metadata)
         return cls(
             text=text,
-            version=version.version,
+            version=metadata.version,
             error_correction=error_correction,
             mode=segment.mode,
             data_codewords=data_codewords,
@@ -1629,6 +1648,8 @@ class Args:
     'terminal_img'
     >>> Args.from_argv(["--text", "A", "--terminal-image-protocol", "iterm2"]).terminal_image_protocol
     'iterm2'
+    >>> Args.from_argv(["--text", "A", "--version", "10"]).version
+    10
     >>> Args.from_argv(["--text", "A", "--output", "qr.svg"]).output
     'qr.svg'
     >>> Args.from_argv(["wifi", "--ssid", "Cafe"]).command
@@ -1648,6 +1669,9 @@ class Args:
     >>> byte_capacity = QRVersions.for_version(40, "L").capacity("byte")
     >>> [len(chunk.encode()) for chunk in Args().split_text("x" * (byte_capacity + 1), "byte")]
     [2953, 1]
+    >>> version_1_capacity = QRVersions.for_version(1, "L").capacity("byte")
+    >>> [len(chunk.encode()) for chunk in Args(version=1).split_text("x" * (version_1_capacity + 1), "byte")]
+    [17, 1]
     >>> Args().split_text("A" * 5, "alphanumeric", capacity=2)
     ['AA', 'AA', 'A']
     >>> out = StringIO()
@@ -1657,6 +1681,26 @@ class Args:
     0
     >>> out.getvalue().splitlines()[0]
     '111111100101101111111'
+    >>> Args.from_argv(["--text", "A", "--version", "10"]).make_codes("A")[0].version
+    10
+    >>> err = StringIO()
+    >>> with redirect_stderr(err):
+    ...     Args.from_argv(["--text", "A", "--version", "0"])
+    Traceback (most recent call last):
+    ...
+    SystemExit: 2
+    >>> err = StringIO()
+    >>> with redirect_stderr(err):
+    ...     Args.from_argv(["--text", "A", "--version", "41"])
+    Traceback (most recent call last):
+    ...
+    SystemExit: 2
+    >>> Args(version=1, split_mode="disabled").make_codes("x" * (version_1_capacity + 1))
+    Traceback (most recent call last):
+    ...
+    ValueError: version 1-L byte QR codes support at most 17 UTF-8 bytes
+    >>> [code.version for code in Args(version=1).make_codes("x" * (version_1_capacity + 1))]
+    [1, 1]
     >>> out = StringIO()
     >>> with redirect_stdout(out):
     ...     exit_code = Args.from_argv(["--text", "A", "--format", "ascii", "--quiet-zone", "0"]).main()
@@ -1790,6 +1834,7 @@ class Args:
     mode: RequestedMode = "byte"
     output_format: OutputFormat = "terminal"
     terminal_image_protocol: TerminalImageProtocol = "auto"
+    version: int | None = None
     output: str | None = None
     split_mode: SplitMode = "all"
 
@@ -1810,6 +1855,7 @@ class Args:
                 terminal_image_protocol=cast(
                     "TerminalImageProtocol", namespace.terminal_image_protocol
                 ),
+                version=namespace.version,
                 output=namespace.output,
                 split_mode=cast("SplitMode", namespace.split_mode),
             )
@@ -1823,6 +1869,7 @@ class Args:
             terminal_image_protocol=cast(
                 "TerminalImageProtocol", namespace.terminal_image_protocol
             ),
+            version=namespace.version,
             output=namespace.output,
             split_mode=cast("SplitMode", namespace.split_mode),
         )
@@ -1834,6 +1881,7 @@ class Args:
         parser.add_argument(
             "-l", "--error-correction", choices=("L", "M", "Q", "H"), default="L"
         )
+        parser.add_argument("--version", type=cls.qr_version)
         parser.add_argument(
             "--mode",
             choices=("auto", "numeric", "alphanumeric", "byte", "kanji"),
@@ -1884,6 +1932,7 @@ class Args:
         wifi.add_argument(
             "-l", "--error-correction", choices=("L", "M", "Q", "H"), default="L"
         )
+        wifi.add_argument("--version", type=cls.qr_version)
         wifi.add_argument("-q", "--quiet-zone", type=int, default=2)
         wifi.add_argument(
             "--format",
@@ -1922,6 +1971,7 @@ class Args:
                     self.wifi_payload(password),
                     error_correction=self.error_correction,
                     mode="byte",
+                    version=self.version,
                 )
             ]
         else:
@@ -1936,6 +1986,18 @@ class Args:
             return getpass.getpass("Password: ")
         print("Password: ", end="", file=sys.stderr, flush=True)
         return sys.stdin.read().rstrip("\n")
+
+    @staticmethod
+    def qr_version(value: str) -> int:
+        try:
+            version = int(value)
+        except ValueError as error:
+            msg = "version must be between 1 and 40"
+            raise argparse.ArgumentTypeError(msg) from error
+        if not QRVersions.MIN_VERSION <= version <= QRVersions.MAX_VERSION:
+            msg = "version must be between 1 and 40"
+            raise argparse.ArgumentTypeError(msg)
+        return version
 
     def wifi_payload(self, password: str) -> str:
         if self.wifi_ssid is None:
@@ -1963,27 +2025,47 @@ class Args:
     def make_codes(self, text: str) -> list[QRCode]:
         segment = QRSegment.from_text(text, mode=self.mode)
         try:
-            QRVersions.for_segment(segment, error_correction=self.error_correction)
+            self.version_metadata(segment)
         except ValueError:
             if self.split_mode == "disabled":
                 raise
             return [
                 QRCode.from_text(
-                    chunk, error_correction=self.error_correction, mode=segment.mode
+                    chunk,
+                    error_correction=self.error_correction,
+                    mode=segment.mode,
+                    version=self.version,
                 )
                 for chunk in self.split_text(text, segment.mode)
             ]
         return [
             QRCode.from_text(
-                text, error_correction=self.error_correction, mode=self.mode
+                text,
+                error_correction=self.error_correction,
+                mode=self.mode,
+                version=self.version,
             )
         ]
+
+    def version_metadata(self, segment: QRSegment) -> QRVersion:
+        if self.version is not None:
+            metadata = QRVersions.for_version(self.version, self.error_correction)
+            used_bits = segment.total_bits(metadata.version)
+            if used_bits is not None and used_bits <= metadata.data_codewords * 8:
+                return metadata
+            msg = (
+                f"version {metadata.version}-{self.error_correction} {segment.mode} QR "
+                f"codes support at most {metadata.capacity(segment.mode)} "
+                f"{segment.unit_name}"
+            )
+            raise ValueError(msg)
+        return QRVersions.for_segment(segment, error_correction=self.error_correction)
 
     def split_text(
         self, text: str, mode: SegmentMode, *, capacity: int | None = None
     ) -> list[str]:
         max_capacity = capacity or QRVersions.for_version(
-            QRVersions.MAX_VERSION, self.error_correction
+            self.version or QRVersions.MAX_VERSION, self.error_correction
         ).capacity(mode)
         if mode != "byte":
             return [
