@@ -7,11 +7,19 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import getpass
+import os
 import re
+import struct
 import sys
+import zlib
+from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from itertools import cycle
+from pathlib import Path
 from typing import ClassVar, Literal, cast
 
 Module = Literal["data", "reserved"]
@@ -19,7 +27,11 @@ Pixel = bool | None
 ErrorCorrection = Literal["L", "M", "Q", "H"]
 SegmentMode = Literal["numeric", "alphanumeric", "byte", "kanji"]
 RequestedMode = Literal["auto", "numeric", "alphanumeric", "byte", "kanji"]
-OutputFormat = Literal["terminal", "bits"]
+OutputFormat = Literal[
+    "terminal", "bits", "ascii", "svg", "html", "bmp", "png", "terminal_img"
+]
+TerminalImageProtocol = Literal["auto", "kitty", "iterm2"]
+SplitMode = Literal["all", "wait", "disabled"]
 Command = Literal["text", "wifi"]
 WifiAuth = Literal["WPA", "WEP", "nopass"]
 ANSI_BLACK = "\033[40m  \033[0m"
@@ -839,7 +851,7 @@ class QRCode:
     'byte'
     >>> len(code.matrix) == code.size and len(code.matrix[0]) == code.size
     True
-    >>> rendered = code.render(quiet_zone=1)
+    >>> rendered = QRRenderer.render_terminal(code.rows(), quiet_zone=1)
     >>> rendered.count("\\n")
     22
     >>> QRCode.from_text("1" * 42).version
@@ -898,6 +910,15 @@ class QRCode:
     @property
     def size(self) -> int:
         return len(self.matrix)
+
+    def rows(self) -> list[list[int]]:
+        """Return the generated QR modules as an intermediate 0/1 matrix.
+
+        >>> QRCode.from_text("A").rows()[0]
+        [1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1]
+        """
+
+        return [[1 if cell else 0 for cell in row] for row in self.matrix]
 
     @classmethod
     def from_text(
@@ -1019,50 +1040,235 @@ class QRCode:
                 result.extend(block[index] for block in selected if index < len(block))
         return result
 
-    def render(
-        self,
+
+class QRRenderer:
+    """Render 0/1 QR module matrices into concrete output formats.
+
+    >>> rows = QRCode.from_text("A").rows()
+    >>> QRRenderer.render_bits(rows).splitlines()[0]
+    '111111100101101111111'
+    >>> QRRenderer.render_ascii(rows, quiet_zone=0).splitlines()[0]
+    '#######  # ## #######'
+    >>> QRRenderer.render_svg(rows, quiet_zone=0).startswith('<svg ')
+    True
+    >>> '<svg ' in QRRenderer.render_html([rows])
+    True
+    >>> QRRenderer.render_bmp(rows, quiet_zone=0, scale=1)[:2]
+    b'BM'
+    >>> QRRenderer.render_png(rows, quiet_zone=0, scale=1)[:8]
+    b'\\x89PNG\\r\\n\\x1a\\n'
+    >>> QRRenderer.render_terminal_image(rows, quiet_zone=0, scale=1, protocol="kitty").startswith('\\x1b_Ga=T,f=100,c=21,r=21,C=1;')
+    True
+    >>> QRRenderer.render_terminal_image(rows, quiet_zone=0, scale=1, protocol="kitty").endswith('\\x1b\\\\')
+    True
+    >>> QRRenderer.render_terminal_image(rows, quiet_zone=0, scale=1, protocol="iterm2").startswith('\\x1b]1337;File=inline=1;size=')
+    True
+    >>> QRRenderer.terminal_image_protocol({"KITTY_WINDOW_ID": "1"})
+    'kitty'
+    >>> QRRenderer.terminal_image_protocol({"TERM_PROGRAM": "iTerm.app"})
+    'iterm2'
+    >>> large_rows = QRCode.from_text("x" * QRVersions.for_version(40, "L").capacity("byte"), mode="byte").rows()
+    >>> large_kitty = QRRenderer.render_terminal_image(large_rows, protocol="kitty")
+    >>> large_kitty.startswith('\\x1b_Ga=T,f=100,c=181,r=181,C=1,m=1;')
+    True
+    >>> large_kitty.count('\\x1b_G') > 1 and large_kitty.endswith('\\x1b\\\\')
+    True
+    """
+
+    BLACK: ClassVar[bytes] = b"\x00\x00\x00"
+    WHITE: ClassVar[bytes] = b"\xff\xff\xff"
+    KITTY_CHUNK_SIZE: ClassVar[int] = 4096
+
+    @staticmethod
+    def with_quiet_zone(rows: list[list[int]], quiet_zone: int) -> list[list[int]]:
+        if quiet_zone <= 0:
+            return [row[:] for row in rows]
+        width = len(rows[0]) + (quiet_zone * 2)
+        blank = [0] * width
+        return (
+            [blank[:] for _ in range(quiet_zone)]
+            + [[0] * quiet_zone + row[:] + [0] * quiet_zone for row in rows]
+            + [blank[:] for _ in range(quiet_zone)]
+        )
+
+    @staticmethod
+    def render_terminal(
+        rows: list[list[int]],
         *,
         quiet_zone: int = 2,
         black: str = ANSI_BLACK,
         white: str = ANSI_WHITE,
     ) -> str:
-        """Render the QR matrix as terminal text.
-
-        >>> small = QRCode.from_text("A").render(quiet_zone=0, black="1", white="0")
-        >>> small.splitlines()[0]
-        '111111100101101111111'
-        >>> len(small.splitlines())
-        21
-        >>> QRCode.from_text("A").render(quiet_zone=1).splitlines()[0] == ANSI_WHITE * 23
-        True
-        """
-
-        blank = white * (self.size + (quiet_zone * 2))
-        rows = [blank for _ in range(quiet_zone)]
-        rows.extend(
-            (
-                (white * quiet_zone)
-                + "".join(black if cell else white for cell in row)
-                + (white * quiet_zone)
-            )
-            for row in self.matrix
-        )
-        rows.extend(blank for _ in range(quiet_zone))
-        return "\n".join(rows)
-
-    def render_bits(self) -> str:
-        """Render the raw QR matrix as rows of 0 and 1.
-
-        >>> bits = QRCode.from_text("A").render_bits()
-        >>> bits.splitlines()[0]
-        '111111100101101111111'
-        >>> len(bits.splitlines())
-        21
-        """
-
         return "\n".join(
-            "".join("1" if cell else "0" for cell in row) for row in self.matrix
+            "".join(black if cell else white for cell in row)
+            for row in QRRenderer.with_quiet_zone(rows, quiet_zone)
         )
+
+    @staticmethod
+    def render_bits(rows: list[list[int]]) -> str:
+        return "\n".join("".join(str(cell) for cell in row) for row in rows)
+
+    @staticmethod
+    def render_ascii(rows: list[list[int]], *, quiet_zone: int = 2) -> str:
+        return "\n".join(
+            "".join("#" if cell else " " for cell in row)
+            for row in QRRenderer.with_quiet_zone(rows, quiet_zone)
+        )
+
+    @staticmethod
+    def render_svg(
+        rows: list[list[int]], *, quiet_zone: int = 2, scale: int = 10
+    ) -> str:
+        modules = QRRenderer.with_quiet_zone(rows, quiet_zone)
+        size = len(modules)
+        rects = [
+            f'<rect x="{col * scale}" y="{row * scale}" width="{scale}" height="{scale}"/>'
+            for row, line in enumerate(modules)
+            for col, cell in enumerate(line)
+            if cell
+        ]
+        pixel_size = size * scale
+        return (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{pixel_size}" '
+            f'height="{pixel_size}" viewBox="0 0 {pixel_size} {pixel_size}" '
+            'shape-rendering="crispEdges">'
+            f'<rect width="{pixel_size}" height="{pixel_size}" fill="#fff"/>'
+            '<g fill="#000">' + "".join(rects) + "</g></svg>"
+        )
+
+    @staticmethod
+    def render_html(
+        rows_list: list[list[list[int]]], *, quiet_zone: int = 2, scale: int = 10
+    ) -> str:
+        svgs = "\n".join(
+            f"<figure>{QRRenderer.render_svg(rows, quiet_zone=quiet_zone, scale=scale)}</figure>"
+            for rows in rows_list
+        )
+        return (
+            '<!doctype html><html><head><meta charset="utf-8">'
+            "<title>QR Code</title>"
+            "<style>body{font-family:sans-serif;margin:24px;background:#fff;color:#111}"
+            "figure{margin:0 0 24px}svg{max-width:100%;height:auto}</style>"
+            "</head><body>"
+            f"{svgs}</body></html>"
+        )
+
+    @staticmethod
+    def render_bmp(
+        rows: list[list[int]], *, quiet_zone: int = 2, scale: int = 10
+    ) -> bytes:
+        pixels = QRRenderer.scaled_pixels(rows, quiet_zone=quiet_zone, scale=scale)
+        height = len(pixels)
+        width = len(pixels[0])
+        row_stride = ((width * 3) + 3) & ~3
+        pixel_data = bytearray()
+        for row in reversed(pixels):
+            data = b"".join(
+                QRRenderer.BLACK if cell else QRRenderer.WHITE for cell in row
+            )
+            pixel_data.extend(data)
+            pixel_data.extend(b"\x00" * (row_stride - len(data)))
+        header_size = 14 + 40
+        file_size = header_size + len(pixel_data)
+        return (
+            b"BM"
+            + struct.pack("<IHHI", file_size, 0, 0, header_size)
+            + struct.pack(
+                "<IIIHHIIIIII", 40, width, height, 1, 24, 0, len(pixel_data), 0, 0, 0, 0
+            )
+            + bytes(pixel_data)
+        )
+
+    @staticmethod
+    def render_png(
+        rows: list[list[int]], *, quiet_zone: int = 2, scale: int = 10
+    ) -> bytes:
+        pixels = QRRenderer.scaled_pixels(rows, quiet_zone=quiet_zone, scale=scale)
+        height = len(pixels)
+        width = len(pixels[0])
+        scanlines = b"".join(
+            b"\x00"
+            + b"".join(QRRenderer.BLACK if cell else QRRenderer.WHITE for cell in row)
+            for row in pixels
+        )
+        return (
+            b"\x89PNG\r\n\x1a\n"
+            + QRRenderer.png_chunk(
+                b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+            )
+            + QRRenderer.png_chunk(b"IDAT", zlib.compress(scanlines))
+            + QRRenderer.png_chunk(b"IEND", b"")
+        )
+
+    @staticmethod
+    def render_terminal_image(
+        rows: list[list[int]],
+        *,
+        quiet_zone: int = 2,
+        scale: int = 10,
+        protocol: TerminalImageProtocol = "auto",
+    ) -> str:
+        png = QRRenderer.render_png(rows, quiet_zone=quiet_zone, scale=scale)
+        cells = len(QRRenderer.with_quiet_zone(rows, quiet_zone))
+        match QRRenderer.terminal_image_protocol(os.environ, requested=protocol):
+            case "kitty":
+                return QRRenderer.render_kitty_png(png, columns=cells, rows=cells)
+            case "iterm2":
+                return QRRenderer.render_iterm2_png(png)
+
+    @staticmethod
+    def terminal_image_protocol(
+        env: Mapping[str, str],
+        *,
+        requested: TerminalImageProtocol = "auto",
+    ) -> Literal["kitty", "iterm2"]:
+        if requested != "auto":
+            return requested
+        if env.get("KITTY_WINDOW_ID") or "kitty" in env.get("TERM", "").lower():
+            return "kitty"
+        if env.get("TERM_PROGRAM") == "iTerm.app":
+            return "iterm2"
+        return "kitty"
+
+    @staticmethod
+    def render_kitty_png(png: bytes, *, columns: int, rows: int) -> str:
+        encoded = base64.b64encode(png).decode("ascii")
+        chunks = [
+            encoded[index : index + QRRenderer.KITTY_CHUNK_SIZE]
+            for index in range(0, len(encoded), QRRenderer.KITTY_CHUNK_SIZE)
+        ]
+        placement = f"a=T,f=100,c={columns},r={rows},C=1"
+        if len(chunks) == 1:
+            return f"\033_G{placement};{chunks[0]}\033\\"
+        packets = [f"\033_G{placement},m=1;{chunks[0]}\033\\"]
+        packets.extend(f"\033_Gm=1;{chunk}\033\\" for chunk in chunks[1:-1])
+        packets.append(f"\033_Gm=0;{chunks[-1]}\033\\")
+        return "".join(packets)
+
+    @staticmethod
+    def render_iterm2_png(png: bytes) -> str:
+        encoded = base64.b64encode(png).decode("ascii")
+        return f"\033]1337;File=inline=1;size={len(png)}:{encoded}\a"
+
+    @staticmethod
+    def png_chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", binascii.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    @staticmethod
+    def scaled_pixels(
+        rows: list[list[int]], *, quiet_zone: int = 2, scale: int = 10
+    ) -> list[list[int]]:
+        modules = QRRenderer.with_quiet_zone(rows, quiet_zone)
+        return [
+            [cell for cell in line for _ in range(scale)]
+            for line in modules
+            for _ in range(scale)
+        ]
 
 
 class QRMatrix:
@@ -1417,6 +1623,14 @@ class Args:
     'numeric'
     >>> Args.from_argv(["--text", "A", "--format", "bits"]).output_format
     'bits'
+    >>> Args.from_argv(["--text", "A", "--format", "png"]).output_format
+    'png'
+    >>> Args.from_argv(["--text", "A", "--format", "terminal_img"]).output_format
+    'terminal_img'
+    >>> Args.from_argv(["--text", "A", "--terminal-image-protocol", "iterm2"]).terminal_image_protocol
+    'iterm2'
+    >>> Args.from_argv(["--text", "A", "--output", "qr.svg"]).output
+    'qr.svg'
     >>> Args.from_argv(["wifi", "--ssid", "Cafe"]).command
     'wifi'
     >>> print(Args.wifi_escape(r"semi;colon\\back:slash,comma"))
@@ -1425,10 +1639,12 @@ class Args:
     WIFI:T:WPA;S:Cafe\\;Net;P:secret;;
     >>> Args(command="wifi", wifi_ssid="Cafe", wifi_auth="nopass").wifi_payload("")
     'WIFI:T:nopass;S:Cafe;;'
-    >>> Args.from_argv([]).split_long_inputs
-    True
-    >>> Args.from_argv(["--no-split"]).split_long_inputs
-    False
+    >>> Args.from_argv([]).split_mode
+    'all'
+    >>> Args.from_argv(["--split-mode", "wait"]).split_mode
+    'wait'
+    >>> Args.from_argv(["--split-mode", "disabled"]).split_mode
+    'disabled'
     >>> byte_capacity = QRVersions.for_version(40, "L").capacity("byte")
     >>> [len(chunk.encode()) for chunk in Args().split_text("x" * (byte_capacity + 1), "byte")]
     [2953, 1]
@@ -1441,6 +1657,13 @@ class Args:
     0
     >>> out.getvalue().splitlines()[0]
     '111111100101101111111'
+    >>> out = StringIO()
+    >>> with redirect_stdout(out):
+    ...     exit_code = Args.from_argv(["--text", "A", "--format", "ascii", "--quiet-zone", "0"]).main()
+    >>> exit_code
+    0
+    >>> out.getvalue().splitlines()[0]
+    '#######  # ## #######'
     >>> out = StringIO()
     >>> with patch("sys.stdin", StringIO("from stdin")), redirect_stdout(out):
     ...     exit_code = Args.from_argv(["--quiet-zone", "0"]).main()
@@ -1469,6 +1692,62 @@ class Args:
     ...     Args.read_wifi_password()
     'hidden'
     >>> getpass_mock.assert_called_once_with("Password: ")
+    >>> import tempfile
+    >>> with tempfile.TemporaryDirectory() as directory:
+    ...     exit_code = Args.from_argv(["--text", "A", "--format", "svg", "--output", f"{directory}/qr"]).main()
+    ...     svg_path = Path(directory) / "qr.svg"
+    ...     svg_exists = svg_path.exists() and svg_path.read_text().startswith("<svg ")
+    >>> exit_code, svg_exists
+    (0, True)
+    >>> with tempfile.TemporaryDirectory() as directory:
+    ...     exit_code = Args.from_argv(["--text", "A", "--format", "png", "--output", f"{directory}/qr"]).main()
+    ...     png_path = Path(directory) / "qr.png"
+    ...     png_header = png_path.read_bytes()[:8]
+    >>> exit_code, png_header
+    (0, b'\\x89PNG\\r\\n\\x1a\\n')
+    >>> with tempfile.TemporaryDirectory() as directory:
+    ...     exit_code = Args.from_argv(["--text", "A", "--format", "bmp", "--output", f"{directory}/qr"]).main()
+    ...     bmp_path = Path(directory) / "qr.bmp"
+    ...     bmp_header = bmp_path.read_bytes()[:2]
+    >>> exit_code, bmp_header
+    (0, b'BM')
+    >>> with tempfile.TemporaryDirectory() as directory:
+    ...     exit_code = Args.from_argv(["--text", "A", "--format", "html", "--output", f"{directory}/qr"]).main()
+    ...     html_path = Path(directory) / "qr.html"
+    ...     html_has_svg = "<svg " in html_path.read_text()
+    >>> exit_code, html_has_svg
+    (0, True)
+    >>> out = StringIO()
+    >>> with redirect_stdout(out):
+    ...     exit_code = Args.from_argv(["--text", "A", "--format", "terminal_img", "--terminal-image-protocol", "kitty"]).main()
+    >>> exit_code, out.getvalue().startswith("\\x1b_Ga=T,f=100,c=25,r=25,C=1;")
+    (0, True)
+    >>> with tempfile.TemporaryDirectory() as directory:
+    ...     exit_code = Args.from_argv(["--text", "A", "--format", "terminal_img", "--terminal-image-protocol", "kitty", "--output", f"{directory}/qr"]).main()
+    ...     stream_path = Path(directory) / "qr.terminal_img"
+    ...     stream_starts = stream_path.read_text().startswith("\\x1b_Ga=T,f=100,c=25,r=25,C=1;")
+    >>> exit_code, stream_starts
+    (0, True)
+    >>> out = StringIO()
+    >>> long_text = "x" * (QRVersions.for_version(40, "L").capacity("byte") + 1)
+    >>> with redirect_stdout(out):
+    ...     exit_code = Args.from_argv(["--text", long_text, "--format", "terminal_img", "--terminal-image-protocol", "kitty"]).main()
+    >>> terminal_img_output = out.getvalue()
+    >>> exit_code, terminal_img_output.count("\\x1b_Ga=T,f=100") == 2, "\\x1b_Gm=0;" in terminal_img_output
+    (0, True, True)
+    >>> with tempfile.TemporaryDirectory() as directory:
+    ...     long_text = "x" * (QRVersions.for_version(40, "L").capacity("byte") + 1)
+    ...     exit_code = Args.from_argv(["--text", long_text, "--format", "terminal_img", "--terminal-image-protocol", "kitty", "--output", f"{directory}/long"]).main()
+    ...     paths = sorted(path.name for path in Path(directory).iterdir())
+    ...     first_is_chunked = (Path(directory) / "long-1.terminal_img").read_text().startswith("\\x1b_Ga=T,f=100,c=181,r=181,C=1,m=1;")
+    >>> exit_code, paths, first_is_chunked
+    (0, ['long-1.terminal_img', 'long-2.terminal_img'], True)
+    >>> with tempfile.TemporaryDirectory() as directory:
+    ...     long_text = "x" * (QRVersions.for_version(40, "L").capacity("byte") + 1)
+    ...     exit_code = Args.from_argv(["--text", long_text, "--format", "svg", "--output", f"{directory}/long"]).main()
+    ...     paths = sorted(path.name for path in Path(directory).iterdir())
+    >>> exit_code, paths
+    (0, ['long-1.svg', 'long-2.svg'])
     >>> out = StringIO()
     >>> long_text = "x" * (QRVersions.for_version(40, "L").capacity("byte") + 1)
     >>> with redirect_stdout(out):
@@ -1476,6 +1755,16 @@ class Args:
     >>> exit_code
     0
     >>> "" in out.getvalue().splitlines()
+    True
+    >>> out = StringIO()
+    >>> err = StringIO()
+    >>> with patch("pathlib.Path.open", side_effect=OSError), patch("sys.stdin", StringIO("")), redirect_stdout(out), redirect_stderr(err):
+    ...     exit_code = Args.from_argv(["--text", long_text, "--format", "bits", "--split-mode", "wait"]).main()
+    >>> exit_code
+    0
+    >>> err.getvalue()
+    'Press Enter for next QR code...'
+    >>> "" not in out.getvalue().splitlines()
     True
     >>> err = StringIO()
     >>> with redirect_stderr(err):
@@ -1500,7 +1789,9 @@ class Args:
     error_correction: ErrorCorrection = "L"
     mode: RequestedMode = "byte"
     output_format: OutputFormat = "terminal"
-    split_long_inputs: bool = True
+    terminal_image_protocol: TerminalImageProtocol = "auto"
+    output: str | None = None
+    split_mode: SplitMode = "all"
 
     @classmethod
     def from_argv(cls, argv: list[str] | None = None) -> Args:
@@ -1516,6 +1807,11 @@ class Args:
                 quiet_zone=namespace.quiet_zone,
                 error_correction=cast("ErrorCorrection", namespace.error_correction),
                 output_format=cast("OutputFormat", namespace.format),
+                terminal_image_protocol=cast(
+                    "TerminalImageProtocol", namespace.terminal_image_protocol
+                ),
+                output=namespace.output,
+                split_mode=cast("SplitMode", namespace.split_mode),
             )
         return cls(
             command="text",
@@ -1524,7 +1820,11 @@ class Args:
             error_correction=cast("ErrorCorrection", namespace.error_correction),
             mode=cast("RequestedMode", namespace.mode),
             output_format=cast("OutputFormat", namespace.format),
-            split_long_inputs=namespace.split,
+            terminal_image_protocol=cast(
+                "TerminalImageProtocol", namespace.terminal_image_protocol
+            ),
+            output=namespace.output,
+            split_mode=cast("SplitMode", namespace.split_mode),
         )
 
     @classmethod
@@ -1542,15 +1842,31 @@ class Args:
         parser.add_argument("-q", "--quiet-zone", type=int, default=2)
         parser.add_argument(
             "--format",
-            choices=("terminal", "bits"),
+            choices=(
+                "terminal",
+                "bits",
+                "ascii",
+                "svg",
+                "html",
+                "bmp",
+                "png",
+                "terminal_img",
+            ),
             default="terminal",
             help="output representation",
         )
         parser.add_argument(
-            "--split",
-            action=argparse.BooleanOptionalAction,
-            default=True,
-            help="split oversized input into multiple QR codes",
+            "--terminal-image-protocol",
+            choices=("auto", "kitty", "iterm2"),
+            default="auto",
+            help="terminal image protocol for --format terminal_img",
+        )
+        parser.add_argument("--output", help="output file or basename")
+        parser.add_argument(
+            "--split-mode",
+            choices=("all", "wait", "disabled"),
+            default="all",
+            help="how to handle oversized input",
         )
         subparsers = parser.add_subparsers()
         wifi = subparsers.add_parser(
@@ -1571,27 +1887,47 @@ class Args:
         wifi.add_argument("-q", "--quiet-zone", type=int, default=2)
         wifi.add_argument(
             "--format",
-            choices=("terminal", "bits"),
+            choices=(
+                "terminal",
+                "bits",
+                "ascii",
+                "svg",
+                "html",
+                "bmp",
+                "png",
+                "terminal_img",
+            ),
             default="terminal",
             help="output representation",
+        )
+        wifi.add_argument(
+            "--terminal-image-protocol",
+            choices=("auto", "kitty", "iterm2"),
+            default="auto",
+            help="terminal image protocol for --format terminal_img",
+        )
+        wifi.add_argument("--output", help="output file or basename")
+        wifi.add_argument(
+            "--split-mode",
+            choices=("all", "wait", "disabled"),
+            default="all",
+            help="how to handle oversized input",
         )
 
     def main(self) -> int:
         if self.command == "wifi":
             password = "" if self.wifi_auth == "nopass" else self.read_wifi_password()
-            rendered = [
-                self.render_code(
-                    QRCode.from_text(
-                        self.wifi_payload(password),
-                        error_correction=self.error_correction,
-                        mode="byte",
-                    )
+            codes = [
+                QRCode.from_text(
+                    self.wifi_payload(password),
+                    error_correction=self.error_correction,
+                    mode="byte",
                 )
             ]
         else:
             text = self.text if self.text is not None else sys.stdin.read()
-            rendered = [self.render_code(code) for code in self.make_codes(text)]
-        print("\n\n".join(rendered))
+            codes = self.make_codes(text)
+        self.write_codes(codes)
         return 0
 
     @staticmethod
@@ -1629,7 +1965,7 @@ class Args:
         try:
             QRVersions.for_segment(segment, error_correction=self.error_correction)
         except ValueError:
-            if not self.split_long_inputs:
+            if self.split_mode == "disabled":
                 raise
             return [
                 QRCode.from_text(
@@ -1673,12 +2009,86 @@ class Args:
             chunks.append("".join(current))
         return chunks
 
-    def render_code(self, code: QRCode) -> str:
+    def render_code(self, code: QRCode) -> str | bytes:
         match self.output_format:
             case "terminal":
-                return code.render(quiet_zone=self.quiet_zone)
+                return QRRenderer.render_terminal(
+                    code.rows(), quiet_zone=self.quiet_zone
+                )
             case "bits":
-                return code.render_bits()
+                return QRRenderer.render_bits(code.rows())
+            case "ascii":
+                return QRRenderer.render_ascii(code.rows(), quiet_zone=self.quiet_zone)
+            case "svg":
+                return QRRenderer.render_svg(code.rows(), quiet_zone=self.quiet_zone)
+            case "bmp":
+                return QRRenderer.render_bmp(code.rows(), quiet_zone=self.quiet_zone)
+            case "png":
+                return QRRenderer.render_png(code.rows(), quiet_zone=self.quiet_zone)
+            case "terminal_img":
+                return QRRenderer.render_terminal_image(
+                    code.rows(),
+                    quiet_zone=self.quiet_zone,
+                    protocol=self.terminal_image_protocol,
+                )
+            case "html":
+                return QRRenderer.render_html([code.rows()], quiet_zone=self.quiet_zone)
+
+    def write_codes(self, codes: list[QRCode]) -> None:
+        rows_list = [code.rows() for code in codes]
+        if self.output_format == "html":
+            self.write_text_output(
+                QRRenderer.render_html(rows_list, quiet_zone=self.quiet_zone),
+                self.output_path("html"),
+            )
+            return
+
+        rendered = [self.render_code(code) for code in codes]
+        if (
+            self.output_format in {"terminal", "bits", "ascii", "terminal_img"}
+            and self.output is None
+        ):
+            self.write_stdout_codes(cast("list[str]", rendered))
+            return
+
+        ext = self.output_format
+        for index, data in enumerate(rendered):
+            path = self.output_path(ext, index=index, total=len(rendered))
+            if isinstance(data, bytes):
+                path.write_bytes(data)
+            else:
+                self.write_text_output(data, path)
+
+    @staticmethod
+    def write_text_output(data: str, path: Path) -> None:
+        path.write_text(data, encoding="utf-8")
+
+    def write_stdout_codes(self, rendered: list[str]) -> None:
+        if self.split_mode != "wait" or len(rendered) <= 1:
+            print("\n\n".join(rendered))
+            return
+        for index, data in enumerate(rendered):
+            if index:
+                self.wait_for_next_code()
+            print(data)
+
+    @staticmethod
+    def wait_for_next_code() -> None:
+        print("Press Enter for next QR code...", end="", file=sys.stderr, flush=True)
+        try:
+            with Path("/dev/tty").open(encoding="utf-8") as tty:
+                tty.readline()
+        except OSError:
+            with suppress(EOFError):
+                input()
+
+    def output_path(self, extension: str, *, index: int = 0, total: int = 1) -> Path:
+        base = Path(self.output or "output")
+        suffix = f".{extension}"
+        root = base.with_suffix("") if base.suffix == suffix else base
+        if total > 1:
+            root = Path(f"{root}-{index + 1}")
+        return root if root.suffix == suffix else root.with_suffix(suffix)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,10 @@ $ ./qr.py --text "HELLO WORLD" --error-correction H --mode alphanumeric
 $ printf "wifi-password" | ./qr.py wifi --ssid "Home WiFi"
 ```
 
+```console
+$ ./qr.py --text "https://example.com" --format svg --output qr
+```
+
 By default, input is read from `stdin`. Use `--text` to pass the payload as an argument.
 
-Long input is split into multiple QR codes by default. Use `--no-split` to fail instead.
+Long input is split into multiple QR codes by default. Use `--split-mode wait` to advance with Enter, or `--split-mode disabled` to fail instead.
