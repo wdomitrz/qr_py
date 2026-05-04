@@ -1878,6 +1878,8 @@ class Args:
     'H'
     >>> Args.from_argv(["--text", "123", "--mode", "numeric"]).mode
     'numeric'
+    >>> Args.from_argv([]).mode
+    'auto'
     >>> Args.from_argv(["--text", "A", "--format", "bits"]).output_format
     'bits'
     >>> Args.from_argv(["--text", "A", "--format", "png"]).output_format
@@ -1890,8 +1892,12 @@ class Args:
     10
     >>> Args.from_argv(["--text", "A", "--output", "qr.svg"]).output
     'qr.svg'
+    >>> Args.from_argv(["--text", "A"]).wifi_ssid is None
+    True
     >>> Args.from_argv(["wifi", "--ssid", "Cafe"]).command
     'wifi'
+    >>> Args.from_argv(["wifi", "--ssid", "Cafe"]).text is None
+    True
     >>> print(WifiPayload.escape(r"semi;colon\\back:slash,comma"))
     semi\\;colon\\\\back\\:slash\\,comma
     >>> print(WifiPayload(ssid="Cafe;Net").text("secret"))
@@ -2063,19 +2069,19 @@ class Args:
     SystemExit: 2
     """
 
-    command: Command = "text"
+    command: Command
     text: str | None = None
     wifi_ssid: str | None = None
-    wifi_auth: WifiAuth = "WPA"
+    wifi_auth: WifiAuth | None = None
     wifi_hidden: bool = False
-    quiet_zone: int = 2
-    error_correction: ErrorCorrection = "L"
-    mode: RequestedMode = "byte"
-    output_format: OutputFormat = "terminal"
-    terminal_image_protocol: TerminalImageProtocol = "auto"
-    version: int | None = None
-    output: str | None = None
-    split_mode: SplitMode = "all"
+    quiet_zone: int
+    error_correction: ErrorCorrection
+    mode: RequestedMode | None = None
+    output_format: OutputFormat
+    terminal_image_protocol: TerminalImageProtocol
+    version: int | None
+    output: str | None
+    split_mode: SplitMode
 
     @classmethod
     def from_argv(cls, argv: list[str] | None = None) -> Args:
@@ -2115,7 +2121,7 @@ class Args:
 
     @classmethod
     def add_common_arguments(cls, parser: argparse.ArgumentParser) -> None:
-        parser.set_defaults(command="text")
+        parser.set_defaults(command="text", ssid=None, auth=None, hidden=False)
         parser.add_argument("--text")
         parser.add_argument(
             "-l", "--error-correction", choices=("L", "M", "Q", "H"), default="L"
@@ -2215,7 +2221,7 @@ class Args:
     def payload_text(self) -> str:
         if self.command != "wifi":
             return self.text if self.text is not None else sys.stdin.read()
-        if self.wifi_ssid is None:
+        if self.wifi_ssid is None or self.wifi_auth is None:
             msg = "wifi ssid is required"
             raise ValueError(msg)
         password = "" if self.wifi_auth == "nopass" else self.read_wifi_password()
@@ -2226,7 +2232,7 @@ class Args:
     def job(self) -> QRJob:
         return QRJob(
             error_correction=self.error_correction,
-            mode="byte" if self.command == "wifi" else self.mode,
+            mode="byte" if self.command == "wifi" else cast("RequestedMode", self.mode),
             version=self.version,
             split_mode=self.split_mode,
         )
