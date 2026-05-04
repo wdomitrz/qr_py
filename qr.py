@@ -27,6 +27,7 @@ Pixel = bool | None
 ErrorCorrection = Literal["L", "M", "Q", "H"]
 SegmentMode = Literal["numeric", "alphanumeric", "byte", "kanji"]
 RequestedMode = Literal["auto", "numeric", "alphanumeric", "byte", "kanji"]
+CharacterCountVersionGroup = Literal["1-9", "10-26", "27-40"]
 OutputFormat = Literal[
     "terminal", "bits", "ascii", "svg", "html", "bmp", "png", "terminal_img"
 ]
@@ -215,7 +216,12 @@ class QRVersions:
     MAX_VERSION: ClassVar[int] = 40
     MIN_ALIGNMENT_VERSION: ClassVar[int] = 2
     MIN_VERSION_INFO_VERSION: ClassVar[int] = 7
-    FORMAT_BITS: ClassVar[dict[ErrorCorrection, int]] = {"L": 1, "M": 0, "Q": 3, "H": 2}
+    FORMAT_ERROR_CORRECTION_BITS: ClassVar[dict[ErrorCorrection, int]] = {
+        "L": 0b01,
+        "M": 0b00,
+        "Q": 0b11,
+        "H": 0b10,
+    }
     ECC_CODEWORDS_PER_BLOCK: ClassVar[dict[ErrorCorrection, tuple[int, ...]]] = {
         "L": (
             -1,
@@ -564,48 +570,48 @@ class QRVersions:
             81,
         ),
     }
-    ALIGNMENT_POSITIONS: ClassVar[tuple[tuple[int, ...], ...]] = (
-        (),
-        (6, 18),
-        (6, 22),
-        (6, 26),
-        (6, 30),
-        (6, 34),
-        (6, 22, 38),
-        (6, 24, 42),
-        (6, 26, 46),
-        (6, 28, 50),
-        (6, 30, 54),
-        (6, 32, 58),
-        (6, 34, 62),
-        (6, 26, 46, 66),
-        (6, 26, 48, 70),
-        (6, 26, 50, 74),
-        (6, 30, 54, 78),
-        (6, 30, 56, 82),
-        (6, 30, 58, 86),
-        (6, 34, 62, 90),
-        (6, 28, 50, 72, 94),
-        (6, 26, 50, 74, 98),
-        (6, 30, 54, 78, 102),
-        (6, 28, 54, 80, 106),
-        (6, 32, 58, 84, 110),
-        (6, 30, 58, 86, 114),
-        (6, 34, 62, 90, 118),
-        (6, 26, 50, 74, 98, 122),
-        (6, 30, 54, 78, 102, 126),
-        (6, 26, 52, 78, 104, 130),
-        (6, 30, 56, 82, 108, 134),
-        (6, 34, 60, 86, 112, 138),
-        (6, 30, 58, 86, 114, 142),
-        (6, 34, 62, 90, 118, 146),
-        (6, 30, 54, 78, 102, 126, 150),
-        (6, 24, 50, 76, 102, 128, 154),
-        (6, 28, 54, 80, 106, 132, 158),
-        (6, 32, 58, 84, 110, 136, 162),
-        (6, 26, 54, 82, 110, 138, 166),
-        (6, 30, 58, 86, 114, 142, 170),
-    )
+    ALIGNMENT_POSITIONS: ClassVar[dict[int, tuple[int, ...]]] = {
+        1: (),
+        2: (6, 18),
+        3: (6, 22),
+        4: (6, 26),
+        5: (6, 30),
+        6: (6, 34),
+        7: (6, 22, 38),
+        8: (6, 24, 42),
+        9: (6, 26, 46),
+        10: (6, 28, 50),
+        11: (6, 30, 54),
+        12: (6, 32, 58),
+        13: (6, 34, 62),
+        14: (6, 26, 46, 66),
+        15: (6, 26, 48, 70),
+        16: (6, 26, 50, 74),
+        17: (6, 30, 54, 78),
+        18: (6, 30, 56, 82),
+        19: (6, 30, 58, 86),
+        20: (6, 34, 62, 90),
+        21: (6, 28, 50, 72, 94),
+        22: (6, 26, 50, 74, 98),
+        23: (6, 30, 54, 78, 102),
+        24: (6, 28, 54, 80, 106),
+        25: (6, 32, 58, 84, 110),
+        26: (6, 30, 58, 86, 114),
+        27: (6, 34, 62, 90, 118),
+        28: (6, 26, 50, 74, 98, 122),
+        29: (6, 30, 54, 78, 102, 126),
+        30: (6, 26, 52, 78, 104, 130),
+        31: (6, 30, 56, 82, 108, 134),
+        32: (6, 34, 60, 86, 112, 138),
+        33: (6, 30, 58, 86, 114, 142),
+        34: (6, 34, 62, 90, 118, 146),
+        35: (6, 30, 54, 78, 102, 126, 150),
+        36: (6, 24, 50, 76, 102, 128, 154),
+        37: (6, 28, 54, 80, 106, 132, 158),
+        38: (6, 32, 58, 84, 110, 136, 162),
+        39: (6, 26, 54, 82, 110, 138, 166),
+        40: (6, 30, 58, 86, 114, 142, 170),
+    }
 
     @classmethod
     def for_version(
@@ -630,7 +636,7 @@ class QRVersions:
             error_correction=error_correction,
             error_codewords=error_codewords,
             data_blocks=data_blocks,
-            alignment_positions=list(cls.ALIGNMENT_POSITIONS[version - 1]),
+            alignment_positions=list(cls.ALIGNMENT_POSITIONS[version]),
         )
 
     @classmethod
@@ -712,11 +718,11 @@ class QRSegment:
         "byte": 0x4,
         "kanji": 0x8,
     }
-    COUNT_BITS: ClassVar[dict[SegmentMode, tuple[int, int, int]]] = {
-        "numeric": (10, 12, 14),
-        "alphanumeric": (9, 11, 13),
-        "byte": (8, 16, 16),
-        "kanji": (8, 10, 12),
+    COUNT_BITS: ClassVar[dict[SegmentMode, dict[CharacterCountVersionGroup, int]]] = {
+        "numeric": {"1-9": 10, "10-26": 12, "27-40": 14},
+        "alphanumeric": {"1-9": 9, "10-26": 11, "27-40": 13},
+        "byte": {"1-9": 8, "10-26": 16, "27-40": 16},
+        "kanji": {"1-9": 8, "10-26": 10, "27-40": 12},
     }
     SHIFT_JIS_BYTES_PER_KANJI: ClassVar[int] = 2
     KANJI_RANGE_1_MIN: ClassVar[int] = 0x8140
@@ -725,6 +731,11 @@ class QRSegment:
     KANJI_RANGE_2_MIN: ClassVar[int] = 0xE040
     KANJI_RANGE_2_MAX: ClassVar[int] = 0xEBBF
     KANJI_RANGE_2_OFFSET: ClassVar[int] = 0xC140
+    SMALL_VERSION_MAX: ClassVar[int] = 9
+    MEDIUM_VERSION_MIN: ClassVar[int] = 10
+    MEDIUM_VERSION_MAX: ClassVar[int] = 26
+    LARGE_VERSION_MIN: ClassVar[int] = 27
+    LARGE_VERSION_MAX: ClassVar[int] = 40
 
     @property
     def unit_name(self) -> str:
@@ -822,7 +833,19 @@ class QRSegment:
 
     @classmethod
     def char_count_bits(cls, mode: SegmentMode, version: int) -> int:
-        return cls.COUNT_BITS[mode][(version + 7) // 17]
+        return cls.COUNT_BITS[mode][cls.character_count_version_group(version)]
+
+    @staticmethod
+    def character_count_version_group(version: int) -> CharacterCountVersionGroup:
+        if QRVersions.MIN_VERSION <= version <= QRSegment.SMALL_VERSION_MAX:
+            return "1-9"
+        elif QRSegment.MEDIUM_VERSION_MIN <= version <= QRSegment.MEDIUM_VERSION_MAX:
+            return "10-26"
+        elif QRSegment.LARGE_VERSION_MIN <= version <= QRSegment.LARGE_VERSION_MAX:
+            return "27-40"
+        else:
+            msg = "QR version must be between 1 and 40"
+            raise ValueError(msg)
 
     def total_bits(self, version: int) -> int | None:
         count_bits = self.char_count_bits(self.mode, version)
@@ -1598,7 +1621,7 @@ class QRMatrix:
 
     @staticmethod
     def format_bits(error_correction: ErrorCorrection, *, mask: int) -> int:
-        data = (QRVersions.FORMAT_BITS[error_correction] << 3) | mask
+        data = (QRVersions.FORMAT_ERROR_CORRECTION_BITS[error_correction] << 3) | mask
         remainder = data
         for _ in range(10):
             remainder = (remainder << 1) ^ ((remainder >> 9) * 0x537)
