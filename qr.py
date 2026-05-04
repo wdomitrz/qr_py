@@ -215,7 +215,6 @@ class QRVersions:
     MAX_VERSION: ClassVar[int] = 40
     MIN_ALIGNMENT_VERSION: ClassVar[int] = 2
     MIN_VERSION_INFO_VERSION: ClassVar[int] = 7
-    ERROR_INDEX: ClassVar[dict[ErrorCorrection, int]] = {"L": 0, "M": 1, "Q": 2, "H": 3}
     FORMAT_BITS: ClassVar[dict[ErrorCorrection, int]] = {"L": 1, "M": 0, "Q": 3, "H": 2}
     ECC_CODEWORDS_PER_BLOCK: ClassVar[dict[ErrorCorrection, tuple[int, ...]]] = {
         "L": (
@@ -391,8 +390,8 @@ class QRVersions:
             30,
         ),
     }
-    ERROR_BLOCKS: ClassVar[tuple[tuple[int, ...], ...]] = (
-        (
+    ERROR_BLOCKS: ClassVar[dict[ErrorCorrection, tuple[int, ...]]] = {
+        "L": (
             -1,
             1,
             1,
@@ -435,7 +434,7 @@ class QRVersions:
             24,
             25,
         ),
-        (
+        "M": (
             -1,
             1,
             1,
@@ -478,7 +477,7 @@ class QRVersions:
             47,
             49,
         ),
-        (
+        "Q": (
             -1,
             1,
             1,
@@ -521,7 +520,7 @@ class QRVersions:
             65,
             68,
         ),
-        (
+        "H": (
             -1,
             1,
             1,
@@ -564,7 +563,7 @@ class QRVersions:
             77,
             81,
         ),
-    )
+    }
     ALIGNMENT_POSITIONS: ClassVar[tuple[tuple[int, ...], ...]] = (
         (),
         (6, 18),
@@ -615,10 +614,9 @@ class QRVersions:
         if not cls.MIN_VERSION <= version <= cls.MAX_VERSION:
             msg = "QR version must be between 1 and 40"
             raise ValueError(msg)
-        index = cls.ERROR_INDEX[error_correction]
         raw_codewords = cls.raw_data_modules(version) // 8
         error_codewords = cls.ECC_CODEWORDS_PER_BLOCK[error_correction][version]
-        block_count = cls.ERROR_BLOCKS[index][version]
+        block_count = cls.ERROR_BLOCKS[error_correction][version]
         short_block_count = block_count - (raw_codewords % block_count)
         short_block_length = raw_codewords // block_count
         data_blocks = [
