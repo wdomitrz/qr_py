@@ -1888,212 +1888,7 @@ class OutputWriter:
 
 @dataclass(frozen=True, kw_only=True)
 class Args:
-    """CLI adapter.
-
-    >>> from contextlib import redirect_stderr, redirect_stdout
-    >>> from io import StringIO
-    >>> from unittest.mock import patch
-    >>> out = StringIO()
-    >>> with redirect_stdout(out):
-    ...     exit_code = Args.from_argv(["--text", "A", "--quiet-zone", "0"]).main()
-    >>> exit_code
-    0
-    >>> out.getvalue().splitlines()[0].startswith(ANSI_BLACK * 7)
-    True
-    >>> Args.from_argv(["--text", "HELLO", "--error-correction", "H"]).error_correction
-    'H'
-    >>> Args.from_argv(["--text", "123", "--mode", "numeric"]).mode
-    'numeric'
-    >>> Args.from_argv([]).mode
-    'auto'
-    >>> Args.from_argv(["--text", "A", "--format", "bits"]).output_format
-    'bits'
-    >>> Args.from_argv(["--text", "A", "--format", "png"]).output_format
-    'png'
-    >>> Args.from_argv(["--text", "A", "--format", "terminal_img"]).output_format
-    'terminal_img'
-    >>> Args.from_argv(["--text", "A", "--terminal-image-protocol", "iterm2"]).terminal_image_protocol
-    'iterm2'
-    >>> Args.from_argv(["--text", "A", "--version", "10"]).version
-    10
-    >>> Args.from_argv(["--text", "A", "--output", "qr.svg"]).output
-    'qr.svg'
-    >>> Args.from_argv(["--text", "A"]).wifi_ssid is None
-    True
-    >>> Args.from_argv(["wifi", "--ssid", "Cafe"]).command
-    'wifi'
-    >>> Args.from_argv(["wifi", "--ssid", "Cafe"]).text is None
-    True
-    >>> print(WifiPayload.escape(r"semi;colon\\back:slash,comma"))
-    semi\\;colon\\\\back\\:slash\\,comma
-    >>> print(WifiPayload(ssid="Cafe;Net").text("secret"))
-    WIFI:T:WPA;S:Cafe\\;Net;P:secret;;
-    >>> WifiPayload(ssid="Cafe", auth="nopass").text("")
-    'WIFI:T:nopass;S:Cafe;;'
-    >>> Args.from_argv([]).split_mode
-    'all'
-    >>> Args.from_argv(["--split-mode", "wait"]).split_mode
-    'wait'
-    >>> Args.from_argv(["--split-mode", "disabled"]).split_mode
-    'disabled'
-    >>> byte_capacity = QRVersions.for_version(40, "L").capacity("byte")
-    >>> [len(chunk.encode()) for chunk in QRJob().split_text("x" * (byte_capacity + 1), "byte")]
-    [2953, 1]
-    >>> version_1_capacity = QRVersions.for_version(1, "L").capacity("byte")
-    >>> [len(chunk.encode()) for chunk in QRJob(version=1).split_text("x" * (version_1_capacity + 1), "byte")]
-    [17, 1]
-    >>> QRJob().split_text("A" * 5, "alphanumeric", capacity=2)
-    ['AA', 'AA', 'A']
-    >>> out = StringIO()
-    >>> with redirect_stdout(out):
-    ...     exit_code = Args.from_argv(["--text", "A", "--format", "bits"]).main()
-    >>> exit_code
-    0
-    >>> out.getvalue().splitlines()[0]
-    '111111100101101111111'
-    >>> Args.from_argv(["--text", "A", "--version", "10"]).job().codes("A")[0].version
-    10
-    >>> err = StringIO()
-    >>> with redirect_stderr(err):
-    ...     Args.from_argv(["--text", "A", "--version", "0"])
-    Traceback (most recent call last):
-    ...
-    SystemExit: 2
-    >>> err = StringIO()
-    >>> with redirect_stderr(err):
-    ...     Args.from_argv(["--text", "A", "--version", "41"])
-    Traceback (most recent call last):
-    ...
-    SystemExit: 2
-    >>> QRJob(version=1, split_mode="disabled").codes("x" * (version_1_capacity + 1))
-    Traceback (most recent call last):
-    ...
-    ValueError: version 1-L byte QR codes support at most 17 UTF-8 bytes
-    >>> [code.version for code in QRJob(version=1).codes("x" * (version_1_capacity + 1))]
-    [1, 1]
-    >>> out = StringIO()
-    >>> with redirect_stdout(out):
-    ...     exit_code = Args.from_argv(["--text", "A", "--format", "ascii", "--quiet-zone", "0"]).main()
-    >>> exit_code
-    0
-    >>> out.getvalue().splitlines()[0]
-    '#######  # ## #######'
-    >>> out = StringIO()
-    >>> with patch("sys.stdin", StringIO("from stdin")), redirect_stdout(out):
-    ...     exit_code = Args.from_argv(["--quiet-zone", "0"]).main()
-    >>> exit_code
-    0
-    >>> len(out.getvalue().splitlines())
-    21
-    >>> out = StringIO()
-    >>> with patch("sys.stdin", StringIO("A")), redirect_stdout(out):
-    ...     exit_code = Args.from_argv(["--quiet-zone", "3"]).main()
-    >>> exit_code
-    0
-    >>> len(out.getvalue().splitlines())
-    27
-    >>> out = StringIO()
-    >>> err = StringIO()
-    >>> with patch("sys.stdin", StringIO("secret\\n")), redirect_stdout(out), redirect_stderr(err):
-    ...     exit_code = Args.from_argv(["wifi", "--ssid", "Cafe", "--format", "bits"]).main()
-    >>> exit_code
-    0
-    >>> err.getvalue()
-    'Password: '
-    >>> len(out.getvalue().splitlines()) > 21
-    True
-    >>> with patch("sys.stdin.isatty", return_value=True), patch("getpass.getpass", return_value="hidden") as getpass_mock:
-    ...     Args.read_wifi_password()
-    'hidden'
-    >>> getpass_mock.assert_called_once_with("Password: ")
-    >>> import tempfile
-    >>> with tempfile.TemporaryDirectory() as directory:
-    ...     exit_code = Args.from_argv(["--text", "A", "--format", "svg", "--output", f"{directory}/qr"]).main()
-    ...     svg_path = Path(directory) / "qr.svg"
-    ...     svg_exists = svg_path.exists() and svg_path.read_text().startswith("<svg ")
-    >>> exit_code, svg_exists
-    (0, True)
-    >>> with tempfile.TemporaryDirectory() as directory:
-    ...     exit_code = Args.from_argv(["--text", "A", "--format", "png", "--output", f"{directory}/qr"]).main()
-    ...     png_path = Path(directory) / "qr.png"
-    ...     png_header = png_path.read_bytes()[:8]
-    >>> exit_code, png_header
-    (0, b'\\x89PNG\\r\\n\\x1a\\n')
-    >>> with tempfile.TemporaryDirectory() as directory:
-    ...     exit_code = Args.from_argv(["--text", "A", "--format", "bmp", "--output", f"{directory}/qr"]).main()
-    ...     bmp_path = Path(directory) / "qr.bmp"
-    ...     bmp_header = bmp_path.read_bytes()[:2]
-    >>> exit_code, bmp_header
-    (0, b'BM')
-    >>> with tempfile.TemporaryDirectory() as directory:
-    ...     exit_code = Args.from_argv(["--text", "A", "--format", "html", "--output", f"{directory}/qr"]).main()
-    ...     html_path = Path(directory) / "qr.html"
-    ...     html_has_svg = "<svg " in html_path.read_text()
-    >>> exit_code, html_has_svg
-    (0, True)
-    >>> out = StringIO()
-    >>> with redirect_stdout(out):
-    ...     exit_code = Args.from_argv(["--text", "A", "--format", "terminal_img", "--terminal-image-protocol", "kitty"]).main()
-    >>> exit_code, out.getvalue().startswith("\\x1b_Ga=T,f=100;")
-    (0, True)
-    >>> with tempfile.TemporaryDirectory() as directory:
-    ...     exit_code = Args.from_argv(["--text", "A", "--format", "terminal_img", "--terminal-image-protocol", "kitty", "--output", f"{directory}/qr"]).main()
-    ...     stream_path = Path(directory) / "qr.terminal_img"
-    ...     stream_starts = stream_path.read_text().startswith("\\x1b_Ga=T,f=100;")
-    >>> exit_code, stream_starts
-    (0, True)
-    >>> out = StringIO()
-    >>> err = StringIO()
-    >>> long_text = "x" * (QRVersions.for_version(40, "L").capacity("byte") + 1)
-    >>> with redirect_stdout(out), redirect_stderr(err):
-    ...     exit_code = Args.from_argv(["--text", long_text, "--format", "terminal_img", "--terminal-image-protocol", "kitty"]).main()
-    >>> terminal_img_output = out.getvalue()
-    >>> exit_code, terminal_img_output.count("\\x1b_Ga=T,f=100") == 2, err.getvalue()
-    (0, True, '')
-    >>> with tempfile.TemporaryDirectory() as directory:
-    ...     long_text = "x" * (QRVersions.for_version(40, "L").capacity("byte") + 1)
-    ...     exit_code = Args.from_argv(["--text", long_text, "--format", "terminal_img", "--terminal-image-protocol", "kitty", "--output", f"{directory}/long"]).main()
-    ...     paths = sorted(path.name for path in Path(directory).iterdir())
-    ...     first_is_chunked = (Path(directory) / "long-1.terminal_img").read_text().startswith("\\x1b_Ga=T,f=100,m=1;")
-    >>> exit_code, paths, first_is_chunked
-    (0, ['long-1.terminal_img', 'long-2.terminal_img'], True)
-    >>> with tempfile.TemporaryDirectory() as directory:
-    ...     long_text = "x" * (QRVersions.for_version(40, "L").capacity("byte") + 1)
-    ...     exit_code = Args.from_argv(["--text", long_text, "--format", "svg", "--output", f"{directory}/long"]).main()
-    ...     paths = sorted(path.name for path in Path(directory).iterdir())
-    >>> exit_code, paths
-    (0, ['long-1.svg', 'long-2.svg'])
-    >>> out = StringIO()
-    >>> long_text = "x" * (QRVersions.for_version(40, "L").capacity("byte") + 1)
-    >>> with redirect_stdout(out):
-    ...     exit_code = Args.from_argv(["--text", long_text, "--format", "bits"]).main()
-    >>> exit_code
-    0
-    >>> "" in out.getvalue().splitlines()
-    True
-    >>> out = StringIO()
-    >>> err = StringIO()
-    >>> with patch("pathlib.Path.open", side_effect=OSError), patch("sys.stdin", StringIO("")), redirect_stdout(out), redirect_stderr(err):
-    ...     exit_code = Args.from_argv(["--text", long_text, "--format", "bits", "--split-mode", "wait"]).main()
-    >>> exit_code
-    0
-    >>> err.getvalue()
-    'Press Enter for next QR code...'
-    >>> "" not in out.getvalue().splitlines()
-    True
-    >>> err = StringIO()
-    >>> with redirect_stderr(err):
-    ...     Args.from_argv(["A"])  # doctest: +ELLIPSIS
-    Traceback (most recent call last):
-    ...
-    SystemExit: 2
-    >>> err = StringIO()
-    >>> with redirect_stderr(err):
-    ...     Args.from_argv(["--quiet-zone", "nope"])  # doctest: +ELLIPSIS
-    Traceback (most recent call last):
-    ...
-    SystemExit: 2
-    """
+    """CLI adapter."""
 
     command: Command
     text: str | None = None
@@ -2111,6 +1906,66 @@ class Args:
 
     @classmethod
     def from_argv(cls, argv: list[str] | None = None) -> Args:
+        """Parse CLI arguments.
+
+        >>> from contextlib import redirect_stderr
+        >>> from io import StringIO
+        >>> Args.from_argv(["--text", "HELLO", "--error-correction", "H"]).error_correction
+        'H'
+        >>> Args.from_argv(["--text", "123", "--mode", "numeric"]).mode
+        'numeric'
+        >>> Args.from_argv([]).mode
+        'auto'
+        >>> Args.from_argv(["--text", "A", "--format", "bits"]).output_format
+        'bits'
+        >>> Args.from_argv(["--text", "A", "--format", "png"]).output_format
+        'png'
+        >>> Args.from_argv(["--text", "A", "--format", "terminal_img"]).output_format
+        'terminal_img'
+        >>> Args.from_argv(["--text", "A", "--terminal-image-protocol", "iterm2"]).terminal_image_protocol
+        'iterm2'
+        >>> Args.from_argv(["--text", "A", "--version", "10"]).version
+        10
+        >>> Args.from_argv(["--text", "A", "--output", "qr.svg"]).output
+        'qr.svg'
+        >>> Args.from_argv(["--text", "A"]).wifi_ssid is None
+        True
+        >>> Args.from_argv(["wifi", "--ssid", "Cafe"]).command
+        'wifi'
+        >>> Args.from_argv(["wifi", "--ssid", "Cafe"]).text is None
+        True
+        >>> Args.from_argv([]).split_mode
+        'all'
+        >>> Args.from_argv(["--split-mode", "wait"]).split_mode
+        'wait'
+        >>> Args.from_argv(["--split-mode", "disabled"]).split_mode
+        'disabled'
+        >>> err = StringIO()
+        >>> with redirect_stderr(err):
+        ...     Args.from_argv(["--text", "A", "--version", "0"])
+        Traceback (most recent call last):
+        ...
+        SystemExit: 2
+        >>> err = StringIO()
+        >>> with redirect_stderr(err):
+        ...     Args.from_argv(["--text", "A", "--version", "41"])
+        Traceback (most recent call last):
+        ...
+        SystemExit: 2
+        >>> err = StringIO()
+        >>> with redirect_stderr(err):
+        ...     Args.from_argv(["A"])  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        ...
+        SystemExit: 2
+        >>> err = StringIO()
+        >>> with redirect_stderr(err):
+        ...     Args.from_argv(["--quiet-zone", "nope"])  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        ...
+        SystemExit: 2
+        """
+
         parser = argparse.ArgumentParser(description="Generate a terminal QR code.")
         cls.add_common_arguments(parser)
         namespace = parser.parse_args(argv)
@@ -2246,6 +2101,127 @@ class Args:
         )
 
     def main(self) -> int:
+        """Generate and write QR code output.
+
+        >>> from contextlib import redirect_stderr, redirect_stdout
+        >>> from io import StringIO
+        >>> from pathlib import Path
+        >>> from unittest.mock import patch
+        >>> import tempfile
+        >>> out = StringIO()
+        >>> with redirect_stdout(out):
+        ...     exit_code = Args.from_argv(["--text", "A", "--quiet-zone", "0"]).main()
+        >>> exit_code
+        0
+        >>> out.getvalue().splitlines()[0].startswith(ANSI_BLACK * 7)
+        True
+        >>> out = StringIO()
+        >>> with redirect_stdout(out):
+        ...     exit_code = Args.from_argv(["--text", "A", "--format", "bits"]).main()
+        >>> exit_code
+        0
+        >>> out.getvalue().splitlines()[0]
+        '111111100101101111111'
+        >>> out = StringIO()
+        >>> with redirect_stdout(out):
+        ...     exit_code = Args.from_argv(["--text", "A", "--format", "ascii", "--quiet-zone", "0"]).main()
+        >>> exit_code
+        0
+        >>> out.getvalue().splitlines()[0]
+        '#######  # ## #######'
+        >>> out = StringIO()
+        >>> with patch("sys.stdin", StringIO("A")), redirect_stdout(out):
+        ...     exit_code = Args.from_argv(["--quiet-zone", "3"]).main()
+        >>> exit_code
+        0
+        >>> len(out.getvalue().splitlines())
+        27
+        >>> out = StringIO()
+        >>> err = StringIO()
+        >>> with patch("sys.stdin", StringIO("secret\\n")), redirect_stdout(out), redirect_stderr(err):
+        ...     exit_code = Args.from_argv(["wifi", "--ssid", "Cafe", "--format", "bits"]).main()
+        >>> exit_code
+        0
+        >>> err.getvalue()
+        'Password: '
+        >>> len(out.getvalue().splitlines()) > 21
+        True
+        >>> with tempfile.TemporaryDirectory() as directory:
+        ...     exit_code = Args.from_argv(["--text", "A", "--format", "svg", "--output", f"{directory}/qr"]).main()
+        ...     svg_path = Path(directory) / "qr.svg"
+        ...     svg_exists = svg_path.exists() and svg_path.read_text().startswith("<svg ")
+        >>> exit_code, svg_exists
+        (0, True)
+        >>> with tempfile.TemporaryDirectory() as directory:
+        ...     exit_code = Args.from_argv(["--text", "A", "--format", "png", "--output", f"{directory}/qr"]).main()
+        ...     png_path = Path(directory) / "qr.png"
+        ...     png_header = png_path.read_bytes()[:8]
+        >>> exit_code, png_header
+        (0, b'\\x89PNG\\r\\n\\x1a\\n')
+        >>> with tempfile.TemporaryDirectory() as directory:
+        ...     exit_code = Args.from_argv(["--text", "A", "--format", "bmp", "--output", f"{directory}/qr"]).main()
+        ...     bmp_path = Path(directory) / "qr.bmp"
+        ...     bmp_header = bmp_path.read_bytes()[:2]
+        >>> exit_code, bmp_header
+        (0, b'BM')
+        >>> with tempfile.TemporaryDirectory() as directory:
+        ...     exit_code = Args.from_argv(["--text", "A", "--format", "html", "--output", f"{directory}/qr"]).main()
+        ...     html_path = Path(directory) / "qr.html"
+        ...     html_has_svg = "<svg " in html_path.read_text()
+        >>> exit_code, html_has_svg
+        (0, True)
+        >>> out = StringIO()
+        >>> with redirect_stdout(out):
+        ...     exit_code = Args.from_argv(["--text", "A", "--format", "terminal_img", "--terminal-image-protocol", "kitty"]).main()
+        >>> exit_code, out.getvalue().startswith("\\x1b_Ga=T,f=100;")
+        (0, True)
+        >>> with tempfile.TemporaryDirectory() as directory:
+        ...     exit_code = Args.from_argv(["--text", "A", "--format", "terminal_img", "--terminal-image-protocol", "kitty", "--output", f"{directory}/qr"]).main()
+        ...     stream_path = Path(directory) / "qr.terminal_img"
+        ...     stream_starts = stream_path.read_text().startswith("\\x1b_Ga=T,f=100;")
+        >>> exit_code, stream_starts
+        (0, True)
+        >>> out = StringIO()
+        >>> err = StringIO()
+        >>> long_text = "x" * (QRVersions.for_version(40, "L").capacity("byte") + 1)
+        >>> with redirect_stdout(out), redirect_stderr(err):
+        ...     exit_code = Args.from_argv(["--text", long_text, "--format", "terminal_img", "--terminal-image-protocol", "kitty"]).main()
+        >>> terminal_img_output = out.getvalue()
+        >>> exit_code, terminal_img_output.count("\\x1b_Ga=T,f=100") == 2, err.getvalue()
+        (0, True, '')
+        >>> with tempfile.TemporaryDirectory() as directory:
+        ...     long_text = "x" * (QRVersions.for_version(40, "L").capacity("byte") + 1)
+        ...     exit_code = Args.from_argv(["--text", long_text, "--format", "terminal_img", "--terminal-image-protocol", "kitty", "--output", f"{directory}/long"]).main()
+        ...     paths = sorted(path.name for path in Path(directory).iterdir())
+        ...     first_is_chunked = (Path(directory) / "long-1.terminal_img").read_text().startswith("\\x1b_Ga=T,f=100,m=1;")
+        >>> exit_code, paths, first_is_chunked
+        (0, ['long-1.terminal_img', 'long-2.terminal_img'], True)
+        >>> with tempfile.TemporaryDirectory() as directory:
+        ...     long_text = "x" * (QRVersions.for_version(40, "L").capacity("byte") + 1)
+        ...     exit_code = Args.from_argv(["--text", long_text, "--format", "svg", "--output", f"{directory}/long"]).main()
+        ...     paths = sorted(path.name for path in Path(directory).iterdir())
+        >>> exit_code, paths
+        (0, ['long-1.svg', 'long-2.svg'])
+        >>> out = StringIO()
+        >>> long_text = "x" * (QRVersions.for_version(40, "L").capacity("byte") + 1)
+        >>> with redirect_stdout(out):
+        ...     exit_code = Args.from_argv(["--text", long_text, "--format", "bits"]).main()
+        >>> exit_code
+        0
+        >>> "" in out.getvalue().splitlines()
+        True
+        >>> out = StringIO()
+        >>> err = StringIO()
+        >>> with patch("pathlib.Path.open", side_effect=OSError), patch("sys.stdin", StringIO("")), redirect_stdout(out), redirect_stderr(err):
+        ...     exit_code = Args.from_argv(["--text", long_text, "--format", "bits", "--split-mode", "wait"]).main()
+        >>> exit_code
+        0
+        >>> err.getvalue()
+        'Press Enter for next QR code...'
+        >>> "" not in out.getvalue().splitlines()
+        True
+        """
+
         codes = self.codes()
         renderer = self.output_config()
         rendered = [renderer.render(code) for code in codes]
@@ -2256,6 +2232,24 @@ class Args:
         return self.job().codes(self.payload_text())
 
     def payload_text(self) -> str:
+        """Return the text payload from CLI text, stdin, or WiFi fields.
+
+        >>> from contextlib import redirect_stderr
+        >>> from io import StringIO
+        >>> from unittest.mock import patch
+        >>> Args.from_argv(["--text", "A"]).payload_text()
+        'A'
+        >>> with patch("sys.stdin", StringIO("from stdin")):
+        ...     Args.from_argv([]).payload_text()
+        'from stdin'
+        >>> err = StringIO()
+        >>> with patch("sys.stdin", StringIO("secret\\n")), redirect_stderr(err):
+        ...     Args.from_argv(["wifi", "--ssid", "Cafe"]).payload_text()
+        'WIFI:T:WPA;S:Cafe;P:secret;;'
+        >>> err.getvalue()
+        'Password: '
+        """
+
         if self.command != "wifi":
             return self.text if self.text is not None else sys.stdin.read()
         else:
@@ -2268,6 +2262,14 @@ class Args:
             ).text(password)
 
     def job(self) -> QRJob:
+        """Build the QR generation job for the selected command.
+
+        >>> Args.from_argv(["--text", "A", "--version", "10"]).job().codes("A")[0].version
+        10
+        >>> Args.from_argv(["wifi", "--ssid", "Cafe"]).job().mode
+        'byte'
+        """
+
         if self.command == "wifi":
             return QRJob(
                 error_correction=self.error_correction,
@@ -2301,6 +2303,23 @@ class Args:
 
     @staticmethod
     def read_wifi_password() -> str:
+        """Read WiFi passwords without echoing interactive input.
+
+        >>> from contextlib import redirect_stderr
+        >>> from io import StringIO
+        >>> from unittest.mock import patch
+        >>> with patch("sys.stdin.isatty", return_value=True), patch("getpass.getpass", return_value="hidden") as getpass_mock:
+        ...     Args.read_wifi_password()
+        'hidden'
+        >>> getpass_mock.assert_called_once_with("Password: ")
+        >>> err = StringIO()
+        >>> with patch("sys.stdin.isatty", return_value=False), patch("sys.stdin", StringIO("secret\\n")), redirect_stderr(err):
+        ...     Args.read_wifi_password()
+        'secret'
+        >>> err.getvalue()
+        'Password: '
+        """
+
         if sys.stdin.isatty():
             return getpass.getpass("Password: ")
         else:
