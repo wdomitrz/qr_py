@@ -1076,7 +1076,7 @@ class QRRenderer:
     b'BM'
     >>> QRRenderer.render_png(rows, quiet_zone=0, scale=1)[:8]
     b'\\x89PNG\\r\\n\\x1a\\n'
-    >>> QRRenderer.render_terminal_image(rows, quiet_zone=0, scale=1, protocol="kitty").startswith('\\x1b_Ga=T,f=100,c=21,r=21,C=1;')
+    >>> QRRenderer.render_terminal_image(rows, quiet_zone=0, scale=1, protocol="kitty").startswith('\\x1b_Ga=T,f=100;')
     True
     >>> QRRenderer.render_terminal_image(rows, quiet_zone=0, scale=1, protocol="kitty").endswith('\\x1b\\\\')
     True
@@ -1088,7 +1088,7 @@ class QRRenderer:
     'iterm2'
     >>> large_rows = QRCode.from_text("x" * QRVersions.for_version(40, "L").capacity("byte"), mode="byte").rows()
     >>> large_kitty = QRRenderer.render_terminal_image(large_rows, protocol="kitty")
-    >>> large_kitty.startswith('\\x1b_Ga=T,f=100,c=181,r=181,C=1,m=1;')
+    >>> large_kitty.startswith('\\x1b_Ga=T,f=100,m=1;')
     True
     >>> large_kitty.count('\\x1b_G') > 1 and large_kitty.endswith('\\x1b\\\\')
     True
@@ -1228,10 +1228,9 @@ class QRRenderer:
         protocol: TerminalImageProtocol = "auto",
     ) -> str:
         png = QRRenderer.render_png(rows, quiet_zone=quiet_zone, scale=scale)
-        cells = len(QRRenderer.with_quiet_zone(rows, quiet_zone))
         match QRRenderer.terminal_image_protocol(os.environ, requested=protocol):
             case "kitty":
-                return QRRenderer.render_kitty_png(png, columns=cells, rows=cells)
+                return QRRenderer.render_kitty_png(png)
             case "iterm2":
                 return QRRenderer.render_iterm2_png(png)
 
@@ -1250,16 +1249,15 @@ class QRRenderer:
         return "kitty"
 
     @staticmethod
-    def render_kitty_png(png: bytes, *, columns: int, rows: int) -> str:
+    def render_kitty_png(png: bytes) -> str:
         encoded = base64.b64encode(png).decode("ascii")
         chunks = [
             encoded[index : index + QRRenderer.KITTY_CHUNK_SIZE]
             for index in range(0, len(encoded), QRRenderer.KITTY_CHUNK_SIZE)
         ]
-        placement = f"a=T,f=100,c={columns},r={rows},C=1"
         if len(chunks) == 1:
-            return f"\033_G{placement};{chunks[0]}\033\\"
-        packets = [f"\033_G{placement},m=1;{chunks[0]}\033\\"]
+            return f"\033_Ga=T,f=100;{chunks[0]}\033\\"
+        packets = [f"\033_Ga=T,f=100,m=1;{chunks[0]}\033\\"]
         packets.extend(f"\033_Gm=1;{chunk}\033\\" for chunk in chunks[1:-1])
         packets.append(f"\033_Gm=0;{chunks[-1]}\033\\")
         return "".join(packets)
@@ -1764,12 +1762,12 @@ class Args:
     >>> out = StringIO()
     >>> with redirect_stdout(out):
     ...     exit_code = Args.from_argv(["--text", "A", "--format", "terminal_img", "--terminal-image-protocol", "kitty"]).main()
-    >>> exit_code, out.getvalue().startswith("\\x1b_Ga=T,f=100,c=25,r=25,C=1;")
+    >>> exit_code, out.getvalue().startswith("\\x1b_Ga=T,f=100;")
     (0, True)
     >>> with tempfile.TemporaryDirectory() as directory:
     ...     exit_code = Args.from_argv(["--text", "A", "--format", "terminal_img", "--terminal-image-protocol", "kitty", "--output", f"{directory}/qr"]).main()
     ...     stream_path = Path(directory) / "qr.terminal_img"
-    ...     stream_starts = stream_path.read_text().startswith("\\x1b_Ga=T,f=100,c=25,r=25,C=1;")
+    ...     stream_starts = stream_path.read_text().startswith("\\x1b_Ga=T,f=100;")
     >>> exit_code, stream_starts
     (0, True)
     >>> out = StringIO()
@@ -1783,7 +1781,7 @@ class Args:
     ...     long_text = "x" * (QRVersions.for_version(40, "L").capacity("byte") + 1)
     ...     exit_code = Args.from_argv(["--text", long_text, "--format", "terminal_img", "--terminal-image-protocol", "kitty", "--output", f"{directory}/long"]).main()
     ...     paths = sorted(path.name for path in Path(directory).iterdir())
-    ...     first_is_chunked = (Path(directory) / "long-1.terminal_img").read_text().startswith("\\x1b_Ga=T,f=100,c=181,r=181,C=1,m=1;")
+    ...     first_is_chunked = (Path(directory) / "long-1.terminal_img").read_text().startswith("\\x1b_Ga=T,f=100,m=1;")
     >>> exit_code, paths, first_is_chunked
     (0, ['long-1.terminal_img', 'long-2.terminal_img'], True)
     >>> with tempfile.TemporaryDirectory() as directory:
