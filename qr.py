@@ -217,8 +217,8 @@ class QRVersions:
     MIN_VERSION_INFO_VERSION: ClassVar[int] = 7
     ERROR_INDEX: ClassVar[dict[ErrorCorrection, int]] = {"L": 0, "M": 1, "Q": 2, "H": 3}
     FORMAT_BITS: ClassVar[dict[ErrorCorrection, int]] = {"L": 1, "M": 0, "Q": 3, "H": 2}
-    ECC_CODEWORDS_PER_BLOCK: ClassVar[tuple[tuple[int, ...], ...]] = (
-        (
+    ECC_CODEWORDS_PER_BLOCK: ClassVar[dict[ErrorCorrection, tuple[int, ...]]] = {
+        "L": (
             -1,
             7,
             10,
@@ -261,7 +261,7 @@ class QRVersions:
             30,
             30,
         ),
-        (
+        "M": (
             -1,
             10,
             16,
@@ -304,7 +304,7 @@ class QRVersions:
             28,
             28,
         ),
-        (
+        "Q": (
             -1,
             13,
             22,
@@ -347,7 +347,7 @@ class QRVersions:
             30,
             30,
         ),
-        (
+        "H": (
             -1,
             17,
             28,
@@ -390,7 +390,7 @@ class QRVersions:
             30,
             30,
         ),
-    )
+    }
     ERROR_BLOCKS: ClassVar[tuple[tuple[int, ...], ...]] = (
         (
             -1,
@@ -617,7 +617,7 @@ class QRVersions:
             raise ValueError(msg)
         index = cls.ERROR_INDEX[error_correction]
         raw_codewords = cls.raw_data_modules(version) // 8
-        error_codewords = cls.ECC_CODEWORDS_PER_BLOCK[index][version]
+        error_codewords = cls.ECC_CODEWORDS_PER_BLOCK[error_correction][version]
         block_count = cls.ERROR_BLOCKS[index][version]
         short_block_count = block_count - (raw_codewords % block_count)
         short_block_length = raw_codewords // block_count
