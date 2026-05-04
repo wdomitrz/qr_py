@@ -1771,12 +1771,13 @@ class Args:
     >>> exit_code, stream_starts
     (0, True)
     >>> out = StringIO()
+    >>> err = StringIO()
     >>> long_text = "x" * (QRVersions.for_version(40, "L").capacity("byte") + 1)
-    >>> with redirect_stdout(out):
+    >>> with redirect_stdout(out), redirect_stderr(err):
     ...     exit_code = Args.from_argv(["--text", long_text, "--format", "terminal_img", "--terminal-image-protocol", "kitty"]).main()
     >>> terminal_img_output = out.getvalue()
-    >>> exit_code, terminal_img_output.count("\\x1b_Ga=T,f=100") == 2, "\\x1b_Gm=0;" in terminal_img_output
-    (0, True, True)
+    >>> exit_code, terminal_img_output.count("\\x1b_Ga=T,f=100") == 2, err.getvalue()
+    (0, True, '')
     >>> with tempfile.TemporaryDirectory() as directory:
     ...     long_text = "x" * (QRVersions.for_version(40, "L").capacity("byte") + 1)
     ...     exit_code = Args.from_argv(["--text", long_text, "--format", "terminal_img", "--terminal-image-protocol", "kitty", "--output", f"{directory}/long"]).main()
