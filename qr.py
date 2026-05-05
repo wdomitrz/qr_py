@@ -22,6 +22,8 @@ from itertools import cycle
 from pathlib import Path
 from typing import ClassVar, Literal, cast
 
+from typing_extensions import assert_never
+
 Module = Literal["data", "reserved"]
 Pixel = bool | None
 ErrorCorrection = Literal["L", "M", "Q", "H"]
@@ -1163,12 +1165,16 @@ class QRRenderer:
             if cell
         ]
         pixel_size = size * scale
-        return (
-            f'<svg xmlns="http://www.w3.org/2000/svg" width="{pixel_size}" '
-            f'height="{pixel_size}" viewBox="0 0 {pixel_size} {pixel_size}" '
-            'shape-rendering="crispEdges">'
-            f'<rect width="{pixel_size}" height="{pixel_size}" fill="#fff"/>'
-            '<g fill="#000">' + "".join(rects) + "</g></svg>"
+        return "".join(
+            [
+                f'<svg xmlns="http://www.w3.org/2000/svg" width="{pixel_size}" ',
+                f'height="{pixel_size}" viewBox="0 0 {pixel_size} {pixel_size}" ',
+                'shape-rendering="crispEdges">',
+                f'<rect width="{pixel_size}" height="{pixel_size}" fill="#fff"/>',
+                '<g fill="#000">',
+                *rects,
+                "</g></svg>",
+            ]
         )
 
     @staticmethod
@@ -1700,7 +1706,7 @@ class QRJob:
     def codes(self, text: str) -> list[QRCode]:
         segment = QRSegment.from_text(text, mode=self.mode)
         try:
-            self.version_metadata(segment)
+            _ = self.version_metadata(segment)
         except ValueError:
             if self.split_mode == "disabled":
                 raise
@@ -1848,13 +1854,13 @@ class OutputWriter:
         for index, data in enumerate(rendered):
             path = self.output_path(ext, index=index, total=len(rendered))
             if isinstance(data, bytes):
-                path.write_bytes(data)
+                _ = path.write_bytes(data)
             else:
                 self.write_text_output(data, path)
 
     @staticmethod
     def write_text_output(data: str, path: Path) -> None:
-        path.write_text(data, encoding="utf-8")
+        _ = path.write_text(data, encoding="utf-8")
 
     def write_stdout_codes(self, rendered: list[str]) -> None:
         if self.split_mode != "wait" or len(rendered) <= 1:
@@ -1870,10 +1876,10 @@ class OutputWriter:
         print("Press Enter for next QR code...", end="", file=sys.stderr, flush=True)
         try:
             with Path("/dev/tty").open(encoding="utf-8") as tty:
-                tty.readline()
+                _ = tty.readline()
         except OSError:
             with suppress(EOFError):
-                input()
+                _ = input()
 
     def output_path(
         self, extension: OutputFormat, *, index: int = 0, total: int = 1
@@ -1903,6 +1909,18 @@ class Args:
     version: int | None
     output: str | None
     split_mode: SplitMode
+
+    def __post_init__(self) -> None:
+        match self.command:
+            case "wifi":
+                assert self.wifi_ssid is not None
+                assert self.wifi_auth is not None
+                assert self.text is None
+            case "text":
+                assert self.wifi_ssid is None
+                assert self.wifi_auth is None
+            case _:
+                assert_never(self.command)
 
     @classmethod
     def from_argv(cls, argv: list[str] | None = None) -> Args:
@@ -1969,63 +1987,39 @@ class Args:
         parser = argparse.ArgumentParser(description="Generate a terminal QR code.")
         cls.add_common_arguments(parser)
         namespace = parser.parse_args(argv)
-        match namespace.command:
-            case "wifi":
-                assert namespace.ssid is not None
-                assert namespace.auth is not None
-                return cls(
-                    command="wifi",
-                    wifi_ssid=namespace.ssid,
-                    wifi_auth=cast(WifiAuth, namespace.auth),
-                    wifi_hidden=namespace.hidden,
-                    quiet_zone=namespace.quiet_zone,
-                    error_correction=cast(
-                        "ErrorCorrection", namespace.error_correction
-                    ),
-                    output_format=cast(OutputFormat, namespace.format),
-                    terminal_image_protocol=cast(
-                        "TerminalImageProtocol", namespace.terminal_image_protocol
-                    ),
-                    version=namespace.version,
-                    output=namespace.output,
-                    split_mode=cast(SplitMode, namespace.split_mode),
-                )
-            case "text":
-                return cls(
-                    command="text",
-                    text=namespace.text,
-                    quiet_zone=namespace.quiet_zone,
-                    error_correction=cast(
-                        "ErrorCorrection", namespace.error_correction
-                    ),
-                    mode=cast(RequestedMode, namespace.mode),
-                    output_format=cast(OutputFormat, namespace.format),
-                    terminal_image_protocol=cast(
-                        "TerminalImageProtocol", namespace.terminal_image_protocol
-                    ),
-                    version=namespace.version,
-                    output=namespace.output,
-                    split_mode=cast(SplitMode, namespace.split_mode),
-                )
-            case _:
-                msg = f"unknown command: {namespace.command}"
-                raise ValueError(msg)
+        return cls(
+            command=cast(Command, namespace.command),
+            wifi_ssid=cast(str | None, namespace.ssid),
+            wifi_auth=cast(WifiAuth | None, namespace.auth),
+            wifi_hidden=cast(bool, namespace.hidden),
+            quiet_zone=cast(int, namespace.quiet_zone),
+            error_correction=cast(ErrorCorrection, namespace.error_correction),
+            output_format=cast(OutputFormat, namespace.format),
+            terminal_image_protocol=cast(
+                TerminalImageProtocol, namespace.terminal_image_protocol
+            ),
+            version=cast(int | None, namespace.version),
+            output=cast(str | None, namespace.output),
+            split_mode=cast(SplitMode, namespace.split_mode),
+            mode=cast(RequestedMode, namespace.mode),
+            text=cast(str | None, namespace.text),
+        )
 
     @classmethod
     def add_common_arguments(cls, parser: argparse.ArgumentParser) -> None:
         parser.set_defaults(command="text", ssid=None, auth=None, hidden=False)
-        parser.add_argument("--text")
-        parser.add_argument(
+        _ = parser.add_argument("--text")
+        _ = parser.add_argument(
             "-l", "--error-correction", choices=("L", "M", "Q", "H"), default="L"
         )
-        parser.add_argument("--version", type=cls.qr_version)
-        parser.add_argument(
+        _ = parser.add_argument("--version", type=cls.qr_version)
+        _ = parser.add_argument(
             "--mode",
             choices=("auto", "numeric", "alphanumeric", "byte", "kanji"),
             default="auto",
         )
-        parser.add_argument("-q", "--quiet-zone", type=int, default=2)
-        parser.add_argument(
+        _ = parser.add_argument("-q", "--quiet-zone", type=int, default=2)
+        _ = parser.add_argument(
             "--format",
             choices=(
                 "terminal",
@@ -2040,14 +2034,14 @@ class Args:
             default="terminal",
             help="output representation",
         )
-        parser.add_argument(
+        _ = parser.add_argument(
             "--terminal-image-protocol",
             choices=("auto", "kitty", "iterm2"),
             default="auto",
             help="terminal image protocol for --format terminal_img",
         )
-        parser.add_argument("--output", help="output file or basename")
-        parser.add_argument(
+        _ = parser.add_argument("--output", help="output file or basename")
+        _ = parser.add_argument(
             "--split-mode",
             choices=("all", "wait", "disabled"),
             default="all",
@@ -2058,20 +2052,20 @@ class Args:
             "wifi", help="generate a QR code for WiFi credentials"
         )
         wifi.set_defaults(command="wifi")
-        wifi.add_argument("--ssid", required=True)
-        wifi.add_argument(
+        _ = wifi.add_argument("--ssid", required=True)
+        _ = wifi.add_argument(
             "--auth",
             choices=("WPA", "WEP", "nopass"),
             default="WPA",
             help="WiFi authentication type",
         )
-        wifi.add_argument("--hidden", action="store_true")
-        wifi.add_argument(
+        _ = wifi.add_argument("--hidden", action="store_true")
+        _ = wifi.add_argument(
             "-l", "--error-correction", choices=("L", "M", "Q", "H"), default="L"
         )
-        wifi.add_argument("--version", type=cls.qr_version)
-        wifi.add_argument("-q", "--quiet-zone", type=int, default=2)
-        wifi.add_argument(
+        _ = wifi.add_argument("--version", type=cls.qr_version)
+        _ = wifi.add_argument("-q", "--quiet-zone", type=int, default=2)
+        _ = wifi.add_argument(
             "--format",
             choices=(
                 "terminal",
@@ -2086,14 +2080,14 @@ class Args:
             default="terminal",
             help="output representation",
         )
-        wifi.add_argument(
+        _ = wifi.add_argument(
             "--terminal-image-protocol",
             choices=("auto", "kitty", "iterm2"),
             default="auto",
             help="terminal image protocol for --format terminal_img",
         )
-        wifi.add_argument("--output", help="output file or basename")
-        wifi.add_argument(
+        _ = wifi.add_argument("--output", help="output file or basename")
+        _ = wifi.add_argument(
             "--split-mode",
             choices=("all", "wait", "disabled"),
             default="all",
@@ -2250,16 +2244,21 @@ class Args:
         'Password: '
         """
 
-        if self.command != "wifi":
-            return self.text if self.text is not None else sys.stdin.read()
-        else:
-            if self.wifi_ssid is None or self.wifi_auth is None:
-                msg = "wifi ssid is required"
-                raise ValueError(msg)
-            password = "" if self.wifi_auth == "nopass" else self.read_wifi_password()
-            return WifiPayload(
-                ssid=self.wifi_ssid, auth=self.wifi_auth, hidden=self.wifi_hidden
-            ).text(password)
+        match self.command:
+            case "text":
+                return self.text if self.text is not None else sys.stdin.read()
+            case "wifi":
+                if self.wifi_ssid is None or self.wifi_auth is None:
+                    msg = "wifi ssid is required"
+                    raise ValueError(msg)
+                password = (
+                    "" if self.wifi_auth == "nopass" else self.read_wifi_password()
+                )
+                return WifiPayload(
+                    ssid=self.wifi_ssid, auth=self.wifi_auth, hidden=self.wifi_hidden
+                ).text(password)
+            case _:
+                assert_never(self.command)
 
     def job(self) -> QRJob:
         """Build the QR generation job for the selected command.

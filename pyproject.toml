@@ -25,4 +25,4 @@ ignore = [
 extend-select = ["I"]
 
 [tool.pyright]
-typeCheckingMode = "strict"
+typeCheckingMode = "all"
