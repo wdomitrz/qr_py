@@ -20,12 +20,9 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from itertools import cycle
 from pathlib import Path
-from typing import ClassVar, Literal, NoReturn, cast
+from typing import ClassVar, Literal, cast
 
-
-def assert_never(arg: NoReturn) -> NoReturn:
-    raise AssertionError(arg)
-
+from typing_extensions import assert_never
 
 Module = Literal["data", "reserved"]
 Pixel = bool | None
