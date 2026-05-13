@@ -3,13 +3,6 @@
 # Copyright (c) 2026 Witalis Domitrz <witekdomitrz@gmail.com>
 # AGPL License
 ################################################################
-#
-# /// script
-# requires-python = ">=3.10"
-# dependencies = [
-#   "typing-extensions>=4.1; python_version < '3.11'",
-# ]
-# ///
 
 from __future__ import annotations
 
@@ -29,13 +22,7 @@ from itertools import cycle
 from pathlib import Path
 from typing import ClassVar, Literal, cast
 
-if sys.version_info >= (3, 11):
-    from typing import Self, assert_never  # pyright: ignore[reportUnreachable]
-else:
-    from typing_extensions import (
-        Self,
-        assert_never,
-    )
+from typing_extensions import Self, assert_never
 
 Module = Literal["data", "reserved"]
 Pixel = bool | None
