@@ -3,6 +3,12 @@
 # Copyright (c) 2026 Witalis Domitrz <witekdomitrz@gmail.com>
 # AGPL License
 ################################################################
+#
+# /// script
+# dependencies = [
+#   "typing_extensions",
+# ]
+# ///
 
 from __future__ import annotations
 
